@@ -13,62 +13,60 @@ The `usbliter8` exploit targets a bug in the Apple A13 SecureROM that **cannot**
 - The exploit UF2/binary payload from the original [`usbliter8`](https://github.com/usbliter8/usbliter8) source
 
 <Steps>
+  <Step title="Flash the exploit payload onto the Pico 2">
+    Download the exploit payload file from the original `usbliter8` source repository. To flash it, hold the **BOOTSEL** button on the Pico 2 while connecting it to your Mac — it will appear as a USB mass-storage drive. Drag the payload file onto that drive. The Pico 2 will reboot and the exploit firmware is ready.
+  </Step>
 
-### Flash the exploit payload onto the Pico 2
+  <Step title="Cut and strip the Lightning cable">
+    Cut the Lightning cable approximately 15 cm from the Lightning plug end. Strip the outer insulation to expose the four internal wires: **red** (VBUS / +5 V), **black** (GND), **white** (D−), and **green** (D+).
+  </Step>
 
-Download the exploit payload file from the original `usbliter8` source repository. To flash it, hold the **BOOTSEL** button on the Pico 2 while connecting it to your Mac — it will appear as a USB mass-storage drive. Drag the payload file onto that drive. The Pico 2 will reboot and the exploit firmware is ready.
+  <Step title="Wire the Lightning cable to the Pico 2">
+    Solder or use jumper connectors to attach the four wires to the correct Pico 2 GPIO pins:
 
-### Cut and strip the Lightning cable
+    | Wire colour | Signal | Pico 2 pin |
+    |-------------|--------|------------|
+    | Red | VBUS (+5 V) | **VBUS** |
+    | Black | Ground | **GND** |
+    | White | D− (USB data minus) | **G13** |
+    | Green | D+ (USB data plus) | **G12** |
 
-Cut the Lightning cable approximately 15 cm from the Lightning plug end. Strip the outer insulation to expose the four internal wires: **red** (VBUS / +5 V), **black** (GND), **white** (D−), and **green** (D+).
+    Ensure all connections are secure before powering the rig.
+  </Step>
 
-### Wire the Lightning cable to the Pico 2
+  <Step title="Put the iPhone 11 Pro into DFU mode">
+    With the device **powered off** and **not connected** to any USB cable, follow this button sequence:
 
-Solder or use jumper connectors to attach the four wires to the correct Pico 2 GPIO pins:
+    1. Hold the **Side button** for 3 seconds.
+    2. While still holding the Side button, press and hold the **Volume Down button** for 10 seconds.
+    3. Release the **Side button** but continue holding **Volume Down** for another 5 seconds.
 
-| Wire colour | Signal | Pico 2 pin |
-|-------------|--------|------------|
-| Red | VBUS (+5 V) | **VBUS** |
-| Black | Ground | **GND** |
-| White | D− (USB data minus) | **GP13** |
-| Green | D+ (USB data plus) | **GP12** |
+    The screen must remain completely black. If the Apple logo appears, the timing was off — power down and retry.
+  </Step>
 
-Ensure all connections are secure before powering the rig.
+  <Step title="Connect the iPhone to the Pico 2 rig">
+    Plug the Lightning end of the wired rig into the iPhone (already in DFU mode). Do **not** connect the Pico 2 to the Mac at this step; the Pico 2 runs autonomously from its own USB power or a separate supply while talking to the phone.
 
-### Put the iPhone 11 Pro into DFU mode
+    <Note>
+      **LED indicator behaviour during the exploit:**
 
-With the device **powered off** and **not connected** to any USB cable, follow this button sequence:
+      - The Pico 2 LED **blinks twice** while the exploit payload is being delivered.
+      - The LED **stays lit** when the exploit succeeds — the device is now in PWN DFU mode.
+      - If the LED **turns off**, the exploit failed. Disconnect the rig, re-enter DFU mode on the phone (repeat step 4), reconnect, and try again.
+    </Note>
+  </Step>
 
-1. Hold the **Side button** for 3 seconds.
-2. While still holding the Side button, press and hold the **Volume Down button** for 10 seconds.
-3. Release the **Side button** but continue holding **Volume Down** for another 5 seconds.
+  <Step title="Connect the iPhone to your Mac">
+    Once the LED is **solid** (exploit succeeded), disconnect the iPhone from the Pico 2 rig and plug it directly into your Mac using a standard Lightning-to-USB cable. The device should enumerate on the Mac as an Apple Mobile Device in DFU mode.
+  </Step>
 
-The screen must remain completely black. If the Apple logo appears, the timing was off — power down and retry.
+  <Step title="Verify PWN DFU mode">
+    <Tip>
+      Open **System Configuration** on your Mac, go to the **USB** tab, and look for **Apple Mobile Device (DFU Mode)** in the device tree. Confirm the **Serial Number** field contains `PWND:[usbliter8]`. That string is the definitive sign that the SecureROM exploit landed successfully and the device will accept unsigned firmware.
+    </Tip>
 
-### Connect the iPhone to the Pico 2 rig
-
-Plug the Lightning end of the wired rig into the iPhone (already in DFU mode). Do **not** connect the Pico 2 to the Mac at this step; the Pico 2 runs autonomously from its own USB power or a separate supply while talking to the phone.
-
-<Note>
-  **LED indicator behaviour during the exploit:**
-
-  - The Pico 2 LED **blinks twice** while the exploit payload is being delivered.
-  - The LED **stays lit** when the exploit succeeds — the device is now in PWN DFU mode.
-  - If the LED **turns off**, the exploit failed. Disconnect the rig, re-enter DFU mode on the phone (repeat step 4), reconnect, and try again.
-</Note>
-
-### Connect the iPhone to your Mac
-
-Once the LED is **solid** (exploit succeeded), disconnect the iPhone from the Pico 2 rig and plug it directly into your Mac using a standard Lightning-to-USB cable. The device should enumerate on the Mac as an Apple Mobile Device in DFU mode.
-
-### Verify PWN DFU mode
-
-<Tip>
-  Open **System Information** on your Mac, go to **Hardware → USB**, and look for **Apple Mobile Device (DFU Mode)** in the device tree. Expand its entry and confirm the **Serial Number** field contains `PWND:[usbliter8]`. That string is the definitive sign that the SecureROM exploit landed successfully and the device will accept unsigned firmware.
-</Tip>
-
-If you do not see `PWND:[usbliter8]`, re-enter DFU mode and repeat the exploit step. Occasionally the exploit requires two or three attempts due to USB timing variance.
-
+    If you do not see `PWND:[usbliter8]`, re-enter DFU mode and repeat the exploit step. Occasionally the exploit requires two or three attempts due to USB timing variance.
+  </Step>
 </Steps>
 
 ## What PWN DFU Enables

@@ -1,6 +1,6 @@
 ---
-title: "userland_patches.py: Byte-Patch Userland Binaries for Hacktivation"
-sidebarTitle: "userland_patches.py"
+title: "Userland Binary Patches for iOS 27 CFW Hacktivation"
+sidebarTitle: "Userland Patches"
 description: "Patch mobileactivationd, coreauthd, and ctkd in-place to enable offline hacktivation and prevent SEP-related crashes on the custom firmware."
 ---
 
@@ -8,14 +8,14 @@ description: "Patch mobileactivationd, coreauthd, and ctkd in-place to enable of
 
 ## Location
 
-```
+```text
 patches/userland_patches.py
 ```
 
 ## Usage
 
 ```shell
-./patches/userland_patches.py <coreauthd|ctkd|mobileactivationd> <binary_path>
+./patches/userland_patches.py <ctkd|coreauthd|mobileactivationd> <binary_path>
 ```
 
 The first positional argument selects which patch set to apply; the second is the path to the binary on disk. The file is patched **in place**.
@@ -80,7 +80,7 @@ The DTO (Device Transfer Operations) pending-policy startup block in `coreauthd`
 
 These patches implement offline hacktivation. The first patch makes `-[DeviceType should_hactivate]` return `YES` unconditionally, which triggers the log line:
 
-```
+```text
 Hactivation is enabled, short circuiting activation state to Activated
 ```
 

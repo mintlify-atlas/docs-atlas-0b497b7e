@@ -1,7 +1,7 @@
 ---
 title: "Kernel Patches: iOS 27 Kernelcache Bypass Table for T8030"
 sidebarTitle: "Kernel Patches"
-description: "Complete table of kernelcache patches applied by make_cfw.py to the iOS 27.0 T8030 kernel: SSV, AMFI, TrustCache, USB Restricted Mode, and seprmvr64 bypasses."
+description: "Kernelcache patches applied by make_cfw.py to the iOS 27.0 T8030 kernel: SSV, AMFI, TrustCache, USB Restricted Mode, and seprmvr64 offset tables."
 ---
 
 The iOS 27 kernelcache for iPhone 11 Pro (iPhone12,3 / T8030) ships as a compressed im4p image named `kernelcache.release.iphone12`. `make_cfw.py` extracts it to `kcache.raw` using `pyimg4 im4p extract`, applies binary patches directly to the raw decompressed Mach-O, then repacks with LZFSE compression and appends the original PAYP structure to keep the im4p format intact. The patches documented here are specific to build **24A5370h** (iOS 27.0 beta 2, `work-27.0b2/make_cfw.py`); beta 3 (24A5380h, `work-27.0b3/make_cfw.py`) carries the same logical patches but at different file offsets — the beta 3 offsets are listed in a separate column wherever they differ.
@@ -35,7 +35,7 @@ AMFI (Apple Mobile File Integrity) is the kernel extension responsible for enfor
 
 | Symbol | File Offset (b2) | File Offset (b3) | Patch bytes / instructions | Purpose |
 |--------|-----------------|-----------------|---------------------------|---------|
-| `AMFIIsCDHashInTrustCacheImpl` (`__Z24AMFIIsCDHashInTrustCachehPKhPy`) | `0x1f1ebe0` (+0 … +16) | `0x1f1ccf8` (+0 … +16) | `BTI c` · `MOV x0,#1` · `CBZ x3,#8` · `STR x0,[x3]` · `RET` | Force every CD-hash lookup to report "in trust cache"; write back the result pointer if non-null |
+| `AMFIIsCDHashInTrustCache` (`__Z24AMFIIsCDHashInTrustCachehPKhPy`) | `0x1f1ebe0` (+0 … +16) | `0x1f1ccf8` (+0 … +16) | `BTI c` · `MOV x0,#1` · `CBZ x3,#8` · `STR x0,[x3]` · `RET` | Force every CD-hash lookup to report "in trust cache"; write back the result pointer if non-null |
 | `_PE_i_can_has_debugger` | `0x3a07368`, `+4` | `0x3a05230`, `+4` | `MOV x0,#1` · `RET` (`0xd2800020`, `0xd65f03c0`) | Always advertise the debugger as enabled, unlocking additional kernel debug paths |
 | `postValidation` (`__ZL14postValidationP8LazyPathP7cs_blobjP12OSDictionaryhbjPKcPPcPm`) | `0x1f2b368` | `0x1f29480` | `0x6B00001F` | Allow unsigned or ad-hoc–signed code past the post-validation check |
 | `_check_dyld_policy_internal` (`__ZL27_check_dyld_policy_internalP4procyPy`) | `0x1f2b8c8` and `0x1f2b8d4` | `0x1f299e0` and `0x1f299ec` | `MOV w0,#1` (`0x52800020`) at both sites | Disable dyld policy restrictions that would block library injection |

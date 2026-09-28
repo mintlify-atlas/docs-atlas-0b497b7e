@@ -1,7 +1,7 @@
 ---
 title: "Bootstrap and Sileo: Install the Jailbreak Package Manager"
 sidebarTitle: "Bootstrap & Sileo"
-description: "Extract the rootless bootstrap archive into /var/jb, install Sileo, and fix staged system app visibility after the first normal boot."
+description: "Unpack bootstrap_1900.tar.zst into /var/jb, run prep_bootstrap.sh, install Sileo via dpkg, and move staged system apps to fix app visibility on first boot."
 ---
 
 After getting internet over USB, the next step is extracting the rootless bootstrap into `/var/jb` and installing the Sileo package manager. The bootstrap ships as `bootstrap_1900.tar.zst` inside `work-27.0b2/` and provides the full Procursus toolchain at the rootless path. Sileo is then installed from its `.deb` directly via `dpkg`. This page walks through the full sequence including the staged-apps fix required on first boot and app registration via TrollStoreLite.

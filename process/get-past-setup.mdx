@@ -1,7 +1,7 @@
 ---
-title: "Get Past Setup: Hacktivation and ScreenTime Fix"
+title: "Get Past iOS 27 Setup: Hacktivation and ScreenTime Fix"
 sidebarTitle: "Get Past Setup"
-description: "Apply offline hacktivation patches to mobileactivationd, coreauthd, and ctkd, then fix the ScreenTime launchd deadlock so Setup completes on the first boot."
+description: "Apply offline hacktivation patches to mobileactivationd, coreauthd, and ctkd, then fix the ScreenTime launchd deadlock so Setup completes on first boot."
 ---
 
 On the first normal boot after a clean CFW restore, iOS lands in the Setup assistant and refuses to advance. Two entirely separate problems are responsible: the device cannot activate because SEP is non-functional, and Setup hangs on a loading spinner due to a launchd deadlock in `ScreenTimeAgent`. Both must be fixed before Setup can reach the Home screen.
@@ -135,12 +135,12 @@ The fix is scripted in `patches/disable_screentime.py`. It adds five ScreenTime 
     The `disabled.plist` file lives in the Data volume. You can reach it from either a normal boot via SSH or from SSHRD with the Data volume mounted at `/mnt2`.
 
     **From a normal boot:**
-    ```
+    ```text
     /var/db/com.apple.xpc.launchd/disabled.plist
     ```
 
     **From SSHRD (Data volume mounted at /mnt2):**
-    ```
+    ```text
     /mnt2/db/com.apple.xpc.launchd/disabled.plist
     ```
   </Step>
@@ -172,7 +172,7 @@ The fix is scripted in `patches/disable_screentime.py`. It adds five ScreenTime 
 
     Example output:
 
-    ```
+    ```text
       com.apple.ScreenTimeAgent             <absent>
       com.apple.ScreenTimeSettingsAgent     <absent>
       com.apple.FamilyControlsAgent         <absent>
@@ -188,7 +188,7 @@ The fix is scripted in `patches/disable_screentime.py`. It adds five ScreenTime 
 
     The script prints each label's transition and then a summary line:
 
-    ```
+    ```text
       com.apple.ScreenTimeAgent             <absent> -> True
       com.apple.ScreenTimeSettingsAgent     <absent> -> True
       com.apple.FamilyControlsAgent         <absent> -> True

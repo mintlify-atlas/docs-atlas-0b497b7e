@@ -1,7 +1,7 @@
 ---
-title: "USB Internet Tethering: Share Mac Network with Jailbroken iPhone"
+title: "USB Internet Tethering for Jailbroken iPhone 11 Pro"
 sidebarTitle: "USB Internet"
-description: "Use net_up.sh to share your Mac's internet connection to the jailbroken iPhone 11 Pro over USB-ethernet, since Wi-Fi and baseband are non-functional on CFW."
+description: "Use net_up.sh to share your Mac's internet to the jailbroken iPhone 11 Pro over USB-ethernet, since Wi-Fi and baseband are non-functional on CFW."
 ---
 
 On a custom-firmware (CFW) iPhone 11 Pro running iOS 27, Wi-Fi and baseband are completely non-functional. The only working network path is the USB-ethernet interface that appears when the device is plugged into your Mac. Without internet, `apt`, Sileo, and any package management are dead on arrival. The `net_up.sh` script in `work-27.0b2/` automates the entire reverse-tethering setup in a single command and verifies connectivity before returning.
@@ -60,8 +60,19 @@ The USB-ethernet interface on the Mac is auto-named by macOS (e.g. `en31`, `en35
     ```
   </Step>
 
+  <Step title="Start iproxy tunnel (usbmux fallback path)">
+    Kills any stale `iproxy` and starts a fresh port-forward from `localhost:2222` to device port `22` over usbmux. This tunnel is needed as a fallback because the device may not yet have a static IP configured at this point:
+
+    ```shell
+    pkill -f "iproxy 2222"
+    iproxy 2222 22 &
+    ```
+
+    The script then waits briefly before attempting SSH, so the tunnel is ready.
+  </Step>
+
   <Step title="Configure the device side over SSH">
-    Connects to the device (tries ethernet `10.7.0.2` first, falls back to usbmux `iproxy 2222`) and runs three commands:
+    SSH connection is attempted to the device — ethernet `10.7.0.2` is tried first (faster, avoids usbmux instability), then `localhost:2222` via the iproxy tunnel if the direct connection fails. The loop retries up to four times. On success it runs three commands on the device:
 
     ```shell
     # Assign static IP on the USB-ethernet interface

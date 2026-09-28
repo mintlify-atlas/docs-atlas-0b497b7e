@@ -1,7 +1,7 @@
 ---
-title: "Tools Overview: Binaries Bundled in the usbliter8-fun Toolkit"
+title: "usbliter8-fun Tools: Prebuilt Binaries Overview Guide"
 sidebarTitle: "Tools Overview"
-description: "Reference for every prebuilt binary in the tools/ directory: usbliter8ctl, img4, img4tool, ldid, sshpass, bspatch, gtar, optool, kerneldiff, and trustcache."
+description: "Reference for all prebuilt macOS arm64 binaries in tools/: usbliter8ctl, img4, img4tool, ldid, sshpass, bspatch, gtar, optool, kerneldiff, trustcache."
 ---
 
 The `tools/` directory at the repo root ships a set of pre-compiled macOS arm64 binaries that every script in `work-27.0b2/` depends on. Rather than requiring you to build or `brew install` each dependency, the toolkit bundles exact, tested versions so the boot chains work reliably across clean Mac setups. The sections below document the purpose of every binary and the invocation patterns actually used by the scripts.
@@ -134,12 +134,16 @@ ldid -S ents.plist -Cadhoc <binary>
 ../tools/sshpass -p alpine ssh \
   -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null \
+  -o PreferredAuthentications=password \
+  -o PubkeyAuthentication=no \
   root@10.7.0.2
 
 # Connect via iproxy / usbmux tunnel on port 2222
 ../tools/sshpass -p alpine ssh \
   -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null \
+  -o PreferredAuthentications=password \
+  -o PubkeyAuthentication=no \
   -p 2222 root@localhost
 ```
 

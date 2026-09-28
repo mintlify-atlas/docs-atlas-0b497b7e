@@ -17,8 +17,7 @@ Before running any part of the usbliter8-fun toolchain you need a correctly conf
 | Host OS | macOS (Apple Silicon; `tools/` contains `arm64` binaries such as `ldid_macosx_arm64`) |
 | Target device | iPhone 11 Pro — model identifier `iPhone12,3`, internal codename `d421` |
 | Target SoC | Apple A13 Bionic (`T8030`) |
-| Firmware (beta 2) | iOS 27.0 beta 2, build `24A5370h` — working directory `work-27.0b2/` |
-| Firmware (beta 3) | iOS 27.0 beta 3, build `24A5380h` — working directory `work-27.0b3/` |
+| Firmware | iOS 27.0 beta 2, build `24A5370h` — working directory `work-27.0b2/` |
 
 <Steps>
 
@@ -61,12 +60,6 @@ curl -L -o iPhone12,3_27.0_24A5370h_Restore.ipsw \
 ```
 
 Alternatively, `get_fw.py` inside `work-27.0b2/` will download and unzip it automatically when you run the CFW build step.
-
-For **beta 3** (`24A5380h`), `get_fw.py` inside `work-27.0b3/` downloads from:
-
-```
-https://updates.cdn-apple.com/2026SpringSeed/fullrestores/140-35958/9EC7A77B-DC21-4DD3-B285-8CA45DEF7689/iPhone12,3,iPhone12,5_27.0_24A5380h_Restore.ipsw
-```
 
 ### Verify the bundled tools in `tools/`
 
@@ -125,7 +118,7 @@ This approach keeps your password out of shell history and out of the repository
 
 ### Confirm your working directory
 
-All commands in the jailbreak process are run from inside the `work-27.0b2/` folder (or `work-27.0b3/` for beta 3). Change into it before proceeding:
+All commands in the jailbreak process are run from inside the `work-27.0b2/` folder. Change into it before proceeding:
 
 ```shell
 cd work-27.0b2/
@@ -145,5 +138,5 @@ Before moving on to the CFW flash step, confirm every item below:
 - [ ] All `tools/*` binaries are executable (`chmod +x tools/*`)
 - [ ] `irecovery`, `idevicerestore`, `iproxy`, and `ldid` are on `PATH`
 - [ ] `/tmp/ap.sh` exists and is executable
-- [ ] You are working from inside `work-27.0b2/` (or `work-27.0b3/`)
+- [ ] You are working from inside `work-27.0b2/`
 - [ ] The target device is an iPhone 11 Pro (`iPhone12,3`) — no other model is supported

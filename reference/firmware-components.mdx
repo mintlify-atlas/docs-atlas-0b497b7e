@@ -96,6 +96,10 @@ sudo -A hdiutil attach -mountpoint CFW_RD ramdisk.dmg -owners off
 
 The `-owners off` flag prevents macOS from enforcing file ownership inside the mounted image, allowing root-level edits from a non-root user context.
 
+<Note>
+Beta 3 (`work-27.0b3`) uses a different ramdisk filename (`094-13753-150.dmg`) and drops the `-A` flag from the `hdiutil` calls (plain `sudo hdiutil attach` / `sudo hdiutil detach`). The `-A` flag in beta 2 tells `sudo` to read a password from the macOS authentication framework; beta 3 relies on the ambient `sudo` credentials instead.
+</Note>
+
 **`restored_external` patches (beta 2 offsets).**
 
 | File Offset | Patch value | Purpose |
@@ -112,6 +116,10 @@ After patching, `restored_external` is re-signed ad-hoc:
 ../tools/ldid_macosx_arm64 -S -M -Cadhoc CFW_RD/usr/local/bin/restored_external
 ```
 
+<Note>
+Beta 3 (`work-27.0b3`) carries the same `restored_external` patches but at different file offsets: the FDR step patch moves from `0x7e53c` to `0x7e558`. The `_ramrod_device_has_baseband` and `_ramrod_device_has_baseband_legacy` stubs present in beta 2 are removed in beta 3 (those `0x49e38` / `0x49DC0` entries do not appear in the beta 3 script). The signing command is identical in both betas.
+</Note>
+
 **`asr` patch.**
 
 | File Offset | Patch value | Purpose |
@@ -123,6 +131,10 @@ After patching, `restored_external` is re-signed ad-hoc:
 ```shell
 ../tools/ldid_macosx_arm64 -S -M -Cadhoc CFW_RD/usr/sbin/asr
 ```
+
+<Note>
+Beta 3 uses a different file offset for the same `asr` signature-verification NOP: `0x1f650` instead of beta 2's `0x24d34`. The signing command is identical.
+</Note>
 
 **Unmount and repack.**
 

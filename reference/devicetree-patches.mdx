@@ -1,7 +1,7 @@
 ---
-title: "DeviceTree Patches: Disabling Content Protection on APFS Volumes"
+title: "DeviceTree Patches: Removing Content Protection on APFS"
 sidebarTitle: "DeviceTree Patches"
-description: "How dt_patch.py and dt_patch2.py patch the iOS 27 DeviceTree to remove content-protect from APFS volume nodes and enable ephemeral storage for the boot ramdisk."
+description: "How dt_patch2.py and patch_dt.py patch the iOS 27 DeviceTree to remove content-protect from APFS volume nodes and enable ephemeral storage for the ramdisk."
 ---
 
 The Apple DeviceTree is a binary blob in Apple's proprietary iBoot DTB format — distinct from the Linux FDT/dtb format — that iBoot constructs and passes to the XNU kernel at boot time. It describes the hardware topology and carries boot-time parameters consumed both by iBoot itself and by kernel drivers via the `IODeviceTree` plane. For the usbliter8-fun CFW, the DeviceTree must be patched before restore because iOS 27 expects an encrypted `/private/var` data volume (`/dev/disk1s2`) and an encrypted `/private/var/mobile` volume (`/dev/disk1s8`), and the CFW's inert fake SEP cannot supply the encryption keys for those volumes. Without patching, the kernel panics with "unencrypted data volume is not allowed" during the first APFS mount. An additional patch sets `ephemeral-storage` to `u32=1` so that the restore progress bar advances past 99% and the ramdisk boot completes cleanly.
@@ -49,7 +49,7 @@ The fix has two parts:
 | `patch_dt2.py` | b3 | Remove `/defaults/content-protect` + set `/defaults/no-effaceable-storage` → `u32=1` + set `/product/boot-ios-diagnostics` → `u32=1` |
 
 <Note>
-The `no-effaceable-storage` and `boot-ios-diagnostics` properties added in beta 3 are taken from the QEMU-t8030 project (`hw/arm/xnu.c`, `macho_populate_dtb` / `REM_PROPS`). They serve as additional AppleKeyStore SEP workarounds and are commented `AppleKeyStore SEP workaround` in both `patch_dt.py` and `patch_dt2.py`.
+The `no-effaceable-storage` and `boot-ios-diagnostics` properties are taken from the QEMU-t8030 project (`hw/arm/xnu.c`, `macho_populate_dtb` / `REM_PROPS`) and serve as AppleKeyStore SEP workarounds. They are present in the `PATCHES` table of `patch_dt2.py` and are active. In `patch_dt.py` those same two entries exist as commented-out lines in `PATCHES` and are **not** applied — `patch_dt.py` only removes `content-protect`.
 </Note>
 
 ## `dt_patch2.py` — beta 2

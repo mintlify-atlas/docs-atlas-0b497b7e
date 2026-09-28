@@ -1,7 +1,7 @@
 ---
-title: "Normal Boot: Building and Sending the Boot Chain"
+title: "Normal Boot: Send the usbliter8 Boot Chain to iOS 27"
 sidebarTitle: "Normal Boot"
-description: "Rebuild the normal boot chain with get_boot.py and send it to the device with boot.py to boot into iOS from PWN DFU mode."
+description: "Rebuild the normal-boot chain with get_boot.py, verify no SSHRD image is present, then send it to the device with boot.py from PWN DFU mode."
 ---
 
 This is a **tethered** jailbreak. The SecureROM exploit (usbliter8) patches the boot chain in RAM and is not persisted to flash, so every single power-on requires you to enter PWN DFU mode and re-send the boot chain from your Mac. There is no way around this limitation — the exploit is entirely in-memory and the device cannot boot autonomously.

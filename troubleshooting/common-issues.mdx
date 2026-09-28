@@ -159,7 +159,7 @@ This page covers the most common problems encountered when working with the usbl
   <Accordion title='Panic "enter restore mode" during CFW restore'>
     **Cause:** This is a known intermittent panic that can occur during `idevicerestore` when flashing the custom firmware. It is not deterministic and does not indicate a permanent hardware or software fault.
 
-    **Fix:** Perform a cold reset of the device (hold Volume Down + Side button until the Apple logo appears, or hold all buttons if that does not respond), then re-run the full restore sequence from the Mac:
+    **Fix:** Perform a cold reset of the device (hold all buttons simultaneously until the Apple logo appears), then re-run the full restore sequence from the Mac:
 
     ```shell
     cd work-27.0b2

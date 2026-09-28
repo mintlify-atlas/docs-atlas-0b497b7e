@@ -12,7 +12,7 @@ description: "usbliter8-fun exploits the usbliter8 SecureROM bug on iPhone 11 Pr
 
 ## What is usbliter8-fun?
 
-usbliter8-fun is a complete end-to-end toolchain for jailbreaking the iPhone 11 Pro on iOS 27.0 beta. It was built on top of wh1te4ever's original CFW and ramdisk work for iOS 27.0 beta 2 (`24A5370h`), extended with additional patches to cover iOS 27.0 beta 3 (`24A5380h`). The toolkit includes Python scripts that automate IPSW download, firmware patching (kernel, DeviceTree, userland binaries), TSS proxy serving, CFW restore, SSH ramdisk boot, and post-restore bootstrapping.
+usbliter8-fun is a complete end-to-end toolchain for jailbreaking the iPhone 11 Pro on iOS 27.0 beta 2 (`24A5370h`). It was built on top of wh1te4ever's original CFW and ramdisk work for that build. The toolkit includes Python scripts that automate IPSW download, firmware patching (kernel, DeviceTree, userland binaries), TSS proxy serving, CFW restore, SSH ramdisk boot, and post-restore bootstrapping.
 
 Only **iPhone 11 Pro** is currently supported. Other devices require finding the correct offsets independently.
 
@@ -60,8 +60,7 @@ The jailbreak follows a five-stage chain:
 |---|---|
 | Device | iPhone 11 Pro (`iPhone12,3`, model `d421`) |
 | SoC | Apple A13 Bionic (`T8030`) |
-| iOS 27.0 beta 2 | Build `24A5370h` (primary; all offsets verified here) |
-| iOS 27.0 beta 3 | Build `24A5380h` (working directory `work-27.0b3/`) |
+| iOS 27.0 beta 2 | Build `24A5370h` — working directory `work-27.0b2/` |
 
 > All binary patch offsets in the scripts are build-specific to **24A5370h / iPhone12,3**. They must be re-verified in IDA or a disassembler before applying to any other build.
 

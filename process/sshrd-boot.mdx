@@ -1,5 +1,5 @@
 ---
-title: "Boot SSH Ramdisk (SSHRD) for Filesystem Access"
+title: "Boot iPhone 11 Pro into SSH Ramdisk for APFS Access"
 sidebarTitle: "SSHRD Boot"
 description: "Boot the iPhone 11 Pro into an SSH ramdisk environment to mount APFS volumes, dump the SEP firmware, and extract the APTicket for normal boot."
 ---
@@ -62,10 +62,12 @@ The SSHRD is a custom ramdisk image that `get_rd.py` builds into `Ramdisk/Restor
     Forward port 22 from the device to localhost port 2222, then SSH in:
 
     ```shell
-    iproxy 2222 22 &
+    pkill -f "iproxy 2222"; iproxy 2222 22 &
     ../tools/sshpass -p alpine ssh \
       -o StrictHostKeyChecking=no \
       -o UserKnownHostsFile=/dev/null \
+      -o PreferredAuthentications=password \
+      -o PubkeyAuthentication=no \
       -p 2222 root@localhost
     ```
 
@@ -152,7 +154,7 @@ In SSHRD, `/` is backed by `/dev/md0`. In a normal boot, `/` is backed by `disk1
 
 Some common utilities (`mkdir`, `mv`, `tar`, `ln`) are absent from the ramdisk image. If you need them, the Filza bundle ships a complete set at:
 
-```
+```text
 /mnt1/Applications/Filza.app/bins/bin/
 ```
 

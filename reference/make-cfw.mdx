@@ -1,6 +1,6 @@
 ---
-title: "make_cfw.py: Build the iOS 27 Custom Firmware"
-sidebarTitle: "make_cfw.py"
+title: "make_cfw.py: Build a Bootable iOS 27.0b2 Custom Firmware"
+sidebarTitle: "Make CFW"
 description: "make_cfw.py patches iBSS, iBEC, DeviceTree, RestoreRamdisk, TXM, and the kernelcache to produce a bootable custom firmware for iPhone 11 Pro."
 ---
 
@@ -26,7 +26,7 @@ description: "make_cfw.py patches iBSS, iBEC, DeviceTree, RestoreRamdisk, TXM, a
     SUDO_ASKPASS=/tmp/ap.sh ./make_cfw.py
     ```
 
-    For beta 3, switch to `work-27.0b3/` — the script is identical in structure but uses the `24A5380h` build offsets (see [beta 2 vs beta 3 offset tables](#beta-2-vs-beta-3-offset-differences) below).
+    For beta 3, switch to `work-27.0b3/` — the script is identical in structure but targets the beta 3 build offsets (see [beta 2 vs beta 3 offset tables](#beta-2-vs-beta-3-offset-differences) below).
   </Step>
 </Steps>
 
@@ -37,7 +37,7 @@ description: "make_cfw.py patches iBSS, iBEC, DeviceTree, RestoreRamdisk, TXM, a
 </ParamField>
 
 <ParamField body="Input (beta 3)" type="directory">
-  `iPhone12,3,iPhone12,5_27.0_24A5380h_Restore/` — the extracted IPSW for iOS 27.0 beta 3, used by `work-27.0b3/make_cfw.py`.
+  The extracted IPSW directory for iOS 27.0 beta 3 (build identifier must be verified independently), used by `work-27.0b3/make_cfw.py`.
 </ParamField>
 
 <ParamField body="Output: CFW/" type="directory">
@@ -147,17 +147,17 @@ The patched raw kernel is repacked with `pyimg4 im4p create -f rkrn --lzfse -d K
 
 ## Beta 2 vs Beta 3 Offset Differences
 
-All offsets documented above are for **beta 2 (24A5370h)**. The `work-27.0b3/make_cfw.py` script targets **beta 3 (24A5380h)** and uses different offsets for every component. The table below shows the diverging offsets for iBSS / iBEC (the bootloaders change the most between builds):
+All offsets documented above are for **beta 2 (24A5370h)**. The `work-27.0b3/make_cfw.py` script targets beta 3 and uses different offsets for every component. The table below shows the diverging offsets for iBSS / iBEC (the bootloaders change the most between builds):
 
 | Patch | Beta 2 offset | Beta 3 offset |
 |-------|--------------|--------------|
-| `image4_validate_property_callback` NOP | `0x23DB0` | `0x23EFC` |
-| `image4_validate_property_callback` `mov x0,#0` | `0x23DB4` | `0x23F00` |
-| Boot-args `adrp` | `0x2AFBC` | `0x2B0F4` |
-| Boot-args `add` | `0x2AFC0` | `0x2B0F8` |
-| Boot-args string | `0xD3850` | `0xD3960` |
+| `image4_validate_property_callback` NOP | `0x23DB0` | *(verify in IDA)* |
+| `image4_validate_property_callback` `mov x0,#0` | `0x23DB4` | *(verify in IDA)* |
+| Boot-args `adrp` | `0x2AFBC` | *(verify in IDA)* |
+| Boot-args `add` | `0x2AFC0` | *(verify in IDA)* |
+| Boot-args string | `0xD3850` | *(verify in IDA)* |
 | iBEC nonce-keep branch | `0x36bd0` | *(not present in b3)* |
 
 <Warning>
-  All offsets are build-specific. They are only valid for **24A5370h** (beta 2) or **24A5380h** (beta 3) on iPhone 11 Pro (d421 / A13 / T8030). Re-verify every offset in IDA before applying to any other build.
+  All offsets are build-specific. They are only valid for **24A5370h** (beta 2) on iPhone 11 Pro (d421 / A13 / T8030). Beta 3 offsets must be independently verified in IDA before use. Re-verify every offset in IDA before applying to any other build.
 </Warning>

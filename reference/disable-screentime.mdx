@@ -1,7 +1,7 @@
 ---
-title: "disable_screentime.py: Fix the Setup ScreenTime Launchd Deadlock"
-sidebarTitle: "disable_screentime.py"
-description: "Adds ScreenTime and FamilyControls launchd labels to disabled.plist so Setup's XPC call fails fast instead of hanging for 10 seconds and killing the process."
+title: "Disable ScreenTime to Fix the Setup Launchd Deadlock"
+sidebarTitle: "Disable ScreenTime"
+description: "Adds five ScreenTime and FamilyControls labels to disabled.plist so Setup's XPC fails fast, preventing the 10-second watchdog hang and boot loop."
 ---
 
 After offline hacktivation the device lands in Setup (com.apple.purplebuddy) and remains stuck on the loading spinner indefinitely. The crash log (`Setup-*.ips`) reveals a scene-update watchdog transgression: Setup exhausts its 10-second budget waiting for an XPC reply from `com.apple.ScreenTimeAgent`. The agent accepts the connection but never replies — the watchdog fires, Setup is killed, and the device loops back to Setup on the next boot.
@@ -10,7 +10,7 @@ After offline hacktivation the device lands in Setup (com.apple.purplebuddy) and
 
 ## Location
 
-```
+```text
 patches/disable_screentime.py
 ```
 

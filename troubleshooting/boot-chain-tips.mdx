@@ -1,7 +1,7 @@
 ---
 title: "Boot Chain Tips: Managing Normal Boot vs SSHRD Chains"
 sidebarTitle: "Boot Chain Tips"
-description: "Understand the tethered boot chain structure, the Ramdisk directory, and the golden rule for switching between normal boot and SSH ramdisk without booting the wrong chain."
+description: "Covers the Ramdisk/ directory, the golden rule for normal boot vs SSHRD chain switching, PWN DFU verification, and the APTicket re-dump lifecycle."
 ---
 
 The usbliter8-fun jailbreak is **tethered**: the iPhone 11 Pro cannot boot on its own after a clean restore. Every single boot — whether into iOS or into the SSH ramdisk — requires the device to be put into DFU mode, exploited into PWN DFU via the Raspberry Pi Pico 2 rig, and then sent the correct boot chain from the Mac. Skipping any of these steps, or sending the wrong chain, produces silent failures that are hard to diagnose. This page explains how the chain directory works, the rule you must never break, and how to verify the state of both the Mac-side directory and the device at runtime.
@@ -133,7 +133,7 @@ The following table describes every image sent to the device and what has been p
 ## APTicket Lifecycle
 
 <Warning>
-  You **must** re-dump the APTicket after every clean restore. Reusing a stale APTicket from a previous restore will cause a black screen on normal boot.
+  You **must** re-dump the APTicket after every clean restore. The dump is performed via SSHRD by mounting the Preboot volume (`/dev/disk1s6`) and extracting the SEP firmware. Reusing a stale APTicket from a previous restore will cause a black screen on normal boot.
 </Warning>
 
 The APTicket is extracted from the SEP firmware image located on the Preboot volume (`/dev/disk1s6`). The workflow is:
