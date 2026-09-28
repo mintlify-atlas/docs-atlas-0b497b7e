@@ -1,0 +1,211 @@
+---
+title: "Tools Overview: Binaries Bundled in the usbliter8-fun Toolkit"
+sidebarTitle: "Tools Overview"
+description: "Reference for every prebuilt binary in the tools/ directory: usbliter8ctl, img4, img4tool, ldid, sshpass, bspatch, gtar, optool, kerneldiff, and trustcache."
+---
+
+The `tools/` directory at the repo root ships a set of pre-compiled macOS arm64 binaries that every script in `work-27.0b2/` depends on. Rather than requiring you to build or `brew install` each dependency, the toolkit bundles exact, tested versions so the boot chains work reliably across clean Mac setups. The sections below document the purpose of every binary and the invocation patterns actually used by the scripts.
+
+<Note>
+  All binaries in `tools/` are compiled for **macOS arm64** (Apple Silicon). If you are running an Intel Mac you must have **Rosetta 2** installed (`softwareupdate --install-rosetta`); otherwise every tool invocation will fail with a "bad CPU type" error.
+</Note>
+
+---
+
+## Quick Reference
+
+<CardGroup cols={2}>
+  <Card title="usbliter8ctl" icon="usb">
+    Sends the iBSS/exploit payload over USB to a device held in DFU mode via the usbliter8 SecureROM exploit.
+  </Card>
+  <Card title="img4" icon="file-zipper">
+    Extracts the raw payload from IMG4 / IM4P containers, stripping the wrapper before binary patching.
+  </Card>
+  <Card title="img4tool" icon="screwdriver-wrench">
+    Creates and repacks IM4P containers; signs them with an APTicket. Written by tihmstar.
+  </Card>
+  <Card title="ldid_macosx_arm64" icon="signature">
+    Pseudo-code-signs Mach-O binaries and manages their entitlement plists (ldid).
+  </Card>
+  <Card title="sshpass" icon="terminal">
+    Provides non-interactive SSH password authentication so boot and network scripts can connect without user prompts.
+  </Card>
+  <Card title="bspatch" icon="code-compare">
+    Applies binary diff patches in bsdiff format; used for incremental firmware updates.
+  </Card>
+  <Card title="gtar" icon="box-archive">
+    GNU tar with full feature support, including zstd decompression needed for `bootstrap_1900.tar.zst`.
+  </Card>
+  <Card title="optool" icon="gear">
+    Modifies Mach-O load commands to insert or remove dylib entries; used when tweaking system binaries.
+  </Card>
+  <Card title="kerneldiff" icon="code-branch">
+    Diffs two kernelcache binaries to identify patch offsets between builds; useful when porting patches to a new iOS release.
+  </Card>
+  <Card title="trustcache_macos_arm64" icon="shield-check">
+    Creates and manages trustcache files that tell the kernel which CD hashes to implicitly trust.
+  </Card>
+</CardGroup>
+
+---
+
+## Detailed Usage
+
+### `usbliter8ctl`
+
+`usbliter8ctl` is the USB exploit sender. It targets a device already held in PWN DFU mode (exploited by the RP2350 hardware rig) and transmits the raw iBSS payload over the USB stack using the usbliter8 SecureROM exploit.
+
+Both `boot.py` and `boot_rd.sh` call it as the very first step of every boot chain:
+
+```shell
+# Normal boot — sends the raw iBSS to PWN DFU device
+../tools/usbliter8ctl boot ./Ramdisk/iBSS.raw
+```
+
+After `usbliter8ctl` returns, the scripts use `irecovery` to send iBEC and all subsequent firmware images over the recovery protocol.
+
+<Warning>
+  `usbliter8ctl` must be called **before** any `irecovery` command. If the device is not in a valid PWN DFU state the command will time out or the device will reboot to normal DFU without the exploit applied.
+</Warning>
+
+---
+
+### `img4`
+
+`img4` extracts the raw binary payload from signed IMG4 or IM4P container files. The toolkit uses it to strip the IMG4 wrapper from iBSS, iBEC, and DeviceTree images before applying binary patches, because patching tools operate on the raw Mach-O / binary blob, not the signed container.
+
+```shell
+# Extract raw payload from an IM4P container
+img4 -i input.im4p -o output.raw
+```
+
+After patching, `img4tool` (see below) is used to repack the raw payload back into a new IM4P container and sign it with the APTicket.
+
+---
+
+### `img4tool`
+
+`img4tool` (by [tihmstar](https://github.com/tihmstar)) handles the other half of the IMG4 workflow: creating IM4P containers from raw payloads and signing them with a real APTicket. It is also used to extract the APTicket from the SEP firmware image after a fresh restore — a step that must be repeated after every clean flash.
+
+```shell
+# Repack a patched iBEC raw binary into a new IM4P container
+img4tool -c output.im4p -t ibec input.raw
+
+# Repack a patched DeviceTree raw binary
+img4tool -c output.im4p -t dtre input.raw
+
+# Extract APTicket from the SEP firmware (run after every clean restore)
+img4tool -e -m t8030_apticket.der dev_sep.img4
+```
+
+<Note>
+  The APTicket extraction step (`img4tool -e -m`) is **mandatory** after every clean restore. Failing to refresh `t8030_apticket.der` causes a black screen on subsequent normal boots because the boot chain tries to validate against a stale ticket.
+</Note>
+
+---
+
+### `ldid_macosx_arm64` (ldid)
+
+`ldid` is the standard pseudo-code-signing tool for jailbroken Apple binaries. The toolkit uses the `ldid_macosx_arm64` build to re-sign patched userland binaries — `mobileactivationd`, `coreauthd`, `ctkd` — after byte-patching them. The critical workflow is to preserve every original entitlement except `get-task-allow`, which AMFI uses to kill ad-hoc signed processes in some configurations.
+
+```shell
+# Sign a binary ad-hoc while preserving its existing entitlements
+ldid_macosx_arm64 -S -M -Cadhoc <binary>
+
+# Extract entitlements from the original binary to a plist
+ldid -e <binary>.orig > ents.plist
+
+# Sign with a specific entitlements plist (after editing ents.plist)
+ldid -S ents.plist -Cadhoc <binary>
+```
+
+<Tip>
+  Always keep a `.orig` backup before patching: `cp binary binary.orig`. Extract entitlements from `.orig`, edit the plist to remove `get-task-allow` if present, then sign the patched binary with `-S ents.plist`.
+</Tip>
+
+---
+
+### `sshpass`
+
+`sshpass` enables non-interactive SSH logins by supplying the password on the command line or via `-p`. Every script that shells into the device (`net_up.sh`, `vnc_up.sh`, manual commands) uses it so that no terminal prompt interrupts an automated sequence.
+
+```shell
+# Connect via USB ethernet (after net_up.sh)
+../tools/sshpass -p alpine ssh \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null \
+  root@10.7.0.2
+
+# Connect via iproxy / usbmux tunnel on port 2222
+../tools/sshpass -p alpine ssh \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null \
+  -p 2222 root@localhost
+```
+
+The default SSH password on the jailbroken device is `alpine` (set by the bootstrap's dropbear configuration).
+
+---
+
+### `bspatch`
+
+`bspatch` applies binary diff files produced by the `bsdiff` algorithm. It is used when an incremental firmware update needs to be applied to an existing binary rather than shipping the entire replaced file. The patch format is compact and deterministic — given the same source binary and diff file, `bspatch` always produces the same output.
+
+```shell
+# Apply a bsdiff patch
+bspatch original_file patched_file patch.bsdiff
+```
+
+---
+
+### `gtar`
+
+macOS ships with BSD tar, which lacks support for certain compression formats and flag combinations that the toolkit requires. `gtar` is GNU tar and handles the `bootstrap_1900.tar.zst` archive (zstd-compressed) that standard `tar` on macOS cannot decompress.
+
+```shell
+# Extract a zstd-compressed bootstrap archive
+../tools/gtar -xf bootstrap_1900.tar.zst -C /var/jb
+```
+
+---
+
+### `optool`
+
+`optool` edits the load commands of Mach-O binaries without recompiling them — it can insert a new `LC_LOAD_DYLIB` entry, remove an existing one, or replace a dylib path. This is useful when a system binary needs to be tweaked to load (or stop loading) a particular shared library.
+
+```shell
+# Insert a dylib load command into a binary
+optool install -c load -p /path/to/tweak.dylib -t target_binary
+
+# Remove a dylib load command
+optool uninstall -p /path/to/old.dylib -t target_binary
+```
+
+---
+
+### `kerneldiff`
+
+`kerneldiff` compares two kernelcache binaries and reports which bytes differ and at what offsets. When porting a patch set from one iOS build to another, `kerneldiff` quickly narrows down where the relevant functions moved so you can re-verify patch offsets in IDA without diffing the entire cache manually.
+
+```shell
+# Diff two kernelcaches and print changed offsets
+kerneldiff old_kernelcache new_kernelcache
+```
+
+<Note>
+  All kernel patch offsets documented in the README are **build-specific to `24A5370h` / iPhone12,3**. Re-verify every offset in IDA before applying them to any other build.
+</Note>
+
+---
+
+### `trustcache_macos_arm64`
+
+`trustcache_macos_arm64` (trustcache) generates and manages trustcache files. A trustcache is a kernel data structure listing CD hashes of binaries that the kernel should implicitly trust without requiring a valid code signature from Apple. The patched `AMFIIsCDHashInTrustCache` kernel patch already makes the kernel trust everything, but `trustcache` remains available for building static trustcache images when a more targeted approach is needed.
+
+```shell
+# Create a new trustcache from a list of binaries
+trustcache_macos_arm64 create output.trustcache /path/to/binary1 /path/to/binary2
+
+# Show the CD hashes stored in an existing trustcache
+trustcache_macos_arm64 show existing.trustcache
+```

@@ -1,0 +1,131 @@
+---
+title: "Bootstrap and Sileo: Install the Jailbreak Package Manager"
+sidebarTitle: "Bootstrap & Sileo"
+description: "Extract the rootless bootstrap archive into /var/jb, install Sileo, and fix staged system app visibility after the first normal boot."
+---
+
+After getting internet over USB, the next step is extracting the rootless bootstrap into `/var/jb` and installing the Sileo package manager. The bootstrap ships as `bootstrap_1900.tar.zst` inside `work-27.0b2/` and provides the full Procursus toolchain at the rootless path. Sileo is then installed from its `.deb` directly via `dpkg`. This page walks through the full sequence including the staged-apps fix required on first boot and app registration via TrollStoreLite.
+
+## Prerequisites
+
+- USB internet must already be working: `net_up.sh` must have printed `[✓] 200` before you continue.
+- The device must be in **normal boot** (not SSHRD). Confirm with:
+  ```shell
+  /sbin/mount | grep -q 'md0 on /' && echo "SSHRD (wrong)" || echo "Normal boot (correct)"
+  ```
+- You have an active SSH session to the device (over ethernet `root@10.7.0.2` or usbmux port 2222).
+
+## Bootstrap Archive
+
+The file `work-27.0b2/bootstrap_1900.tar.zst` is the rootless Procursus bootstrap. It extracts into `/var/jb`, which is the standard rootless jailbreak prefix. All jailbreak binaries, libraries, and package-manager state live under `/var/jb` — the system volume is never modified during this step.
+
+<Note>
+After extracting the archive, check its contents for any required symlink setup before running `prep_bootstrap.sh`. The README specifically calls out that symlinks must be fixed — inspect the archive with `tar --zstd -tf bootstrap_1900.tar.zst | grep ' -> '` to see what symlinks are declared and verify they are created correctly under `/var/jb`.
+</Note>
+
+## Bootstrap and Sileo Install
+
+<Steps>
+  <Step title="Set the PATH in your SSH session">
+    The rootless binaries are not on the default PATH. Set it now so that every subsequent command resolves correctly:
+
+    ```shell
+    export PATH=/var/jb/usr/bin:/var/jb/bin:/var/jb/usr/sbin:/var/jb/sbin:/usr/bin:/bin:/usr/sbin:/sbin
+    ```
+  </Step>
+
+  <Step title="Run prep_bootstrap.sh">
+    This script finalises the bootstrap extraction — it creates necessary symlinks, sets permissions, and prepares the environment for package management:
+
+    ```shell
+    /var/jb/prep_bootstrap.sh
+    ```
+  </Step>
+
+  <Step title="Install Sileo via dpkg">
+    The Sileo `.deb` is included in the bootstrap directory. Install it directly:
+
+    ```shell
+    /var/jb/usr/bin/dpkg -i /var/jb/sileo.deb
+    ```
+
+    `dpkg` will unpack Sileo into `/var/jb/Applications/Sileo.app` and register it in the package database.
+  </Step>
+
+  <Step title="Respring SpringBoard">
+    Kill SpringBoard to apply changes without a full reboot:
+
+    ```shell
+    /bin/ps ax | while read pid rest; do case "$rest" in *CoreServices/SpringBoard.app/SpringBoard) /bin/kill -9 "$pid";; esac; done
+    ```
+
+    SpringBoard will restart automatically. Wait a few seconds for the home screen to reload.
+  </Step>
+</Steps>
+
+## If Sileo Doesn't Appear After Normal Boot
+
+SpringBoard may not pick up apps installed under `/var/jb/Applications/` on first boot. The fix is to copy Sileo into the system `/Applications/` folder using SSHRD, then register it.
+
+<Steps>
+  <Step title="Boot into SSHRD">
+    Re-enter DFU mode, apply PWN DFU, then on the Mac:
+
+    ```shell
+    rm -rf Ramdisk && cp -r Ramdisk_SSH_bak Ramdisk
+    ./boot_rd.sh
+    ```
+
+    Connect via usbmux: `iproxy 2222 22`, then SSH to `root@localhost -p 2222`.
+  </Step>
+
+  <Step title="Mount the system volume read-write">
+    ```shell
+    /sbin/mount_apfs /dev/disk1s1 /mnt1
+    /sbin/mount -u -o rw /dev/disk1s1
+    ```
+  </Step>
+
+  <Step title="Copy Sileo.app into the system Applications folder">
+    ```shell
+    cp -R /var/jb/Applications/Sileo.app /mnt1/Applications/
+    ```
+  </Step>
+
+  <Step title="Boot back to normal and run uicache">
+    After a normal boot, SSH into the device and register the app with the system:
+
+    ```shell
+    cd /Applications/TrollStoreLite.app && ./trollstorehelper refresh-all
+    ```
+
+    This refreshes all app registrations so that Sileo appears on the home screen.
+  </Step>
+</Steps>
+
+## Fix: Only 3 Apps Visible (Settings, Phone, Feedback)
+
+On the very first normal boot the system may show only three apps. This happens because iOS stores pre-installed apps in a `staged_system_apps` directory and hasn't promoted them yet. While still in SSHRD with both volumes mounted, copy all staged apps into the live system Applications folder:
+
+```shell
+for a in /mnt2/staged_system_apps/*.app; do
+  b=${a##*/}; [ -e /mnt1/Applications/$b ] || cp -R "$a" /mnt1/Applications/
+done
+```
+
+This loop only copies apps that are not already present in `/mnt1/Applications/`, so it is safe to run multiple times.
+
+## Using apt and Sileo After Setup
+
+Once the bootstrap is in place and internet is up, the standard Procursus workflow applies:
+
+```shell
+apt-get update
+apt-get install -y neofetch
+```
+
+The `apt-get update` output should show `Hit` lines for each repository. If it prints `connect 127.0.0.1:8888`, see the [apt proxy cleanup section](/post/internet-usb#apt-proxy-cleanup) on the USB Internet page.
+
+<Note>
+**Shebang scripts are blocked by the kernel on rootless.** The kernel refuses to `exec` scripts whose interpreter line is `#!/usr/bin/env ...` because `/usr/bin/env` is not present at the rootless prefix. As a workaround, invoke scripts directly with their interpreter: `bash <script>`. For packages that ship shell scripts (like `neofetch`), the binary is wrapped using the `net/shwrap.c` pattern — a small compiled C wrapper that calls the interpreter explicitly — so the binary executes correctly without relying on `env`.
+</Note>

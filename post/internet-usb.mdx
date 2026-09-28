@@ -1,0 +1,118 @@
+---
+title: "USB Internet Tethering: Share Mac Network with Jailbroken iPhone"
+sidebarTitle: "USB Internet"
+description: "Use net_up.sh to share your Mac's internet connection to the jailbroken iPhone 11 Pro over USB-ethernet, since Wi-Fi and baseband are non-functional on CFW."
+---
+
+On a custom-firmware (CFW) iPhone 11 Pro running iOS 27, Wi-Fi and baseband are completely non-functional. The only working network path is the USB-ethernet interface that appears when the device is plugged into your Mac. Without internet, `apt`, Sileo, and any package management are dead on arrival. The `net_up.sh` script in `work-27.0b2/` automates the entire reverse-tethering setup in a single command and verifies connectivity before returning.
+
+## Static IP Addresses
+
+The setup uses a fixed `/24` subnet so that addresses never collide with your Wi-Fi:
+
+| Host | Interface | Address |
+|------|-----------|---------|
+| Mac (USB side) | auto-detected `enXX` | `10.7.0.1` |
+| iPhone (en2) | `en2` | `10.7.0.2` |
+
+These addresses are also baked into the `/var/jb/netup` binary on the device, so they must not be changed.
+
+## One-Command Setup
+
+After a normal boot with the USB cable plugged in, run this from your Mac:
+
+```shell
+cd work-27.0b2 && ./net_up.sh
+```
+
+The script prints `[✓] 200` when the device can reach the public internet. Any other HTTP status code means something went wrong — recheck the cable and re-run.
+
+<Note>
+The USB-ethernet interface on the Mac is auto-named by macOS (e.g. `en31`, `en35`, …). The name changes across reboots and re-plug events. `net_up.sh` discovers the correct interface automatically — you never need to hard-code it. The manual steps below use `en31` only as an example.
+</Note>
+
+## What `net_up.sh` Does Internally
+
+<Steps>
+  <Step title="Detect the Mac's WAN interface">
+    Reads the default route with `route -n get default` to find which interface currently has internet (e.g. `en0` for Wi-Fi, `en5` for Ethernet). All NAT rules are anchored to this interface.
+  </Step>
+
+  <Step title="Discover the USB-ethernet interface">
+    Iterates every active `en*` interface (excluding the WAN). It prefers any interface that already has an auto-assigned link-local address (`169.254.x.x`) — that is the freshly-enumerated USB-ethernet adapter. If none is found, it falls back to whichever interface is already holding `10.7.0.1` from a previous run.
+  </Step>
+
+  <Step title="Clean up stale 10.7.0.1 addresses">
+    After device re-enumerates over USB, macOS may assign a new interface name while the old one still holds `10.7.0.1`. The script strips that stale alias from all interfaces except the newly selected USB one to prevent IP conflicts.
+  </Step>
+
+  <Step title="Configure the Mac side">
+    Assigns the static IP and enables packet forwarding, then loads a pf NAT rule:
+
+    ```shell
+    # Assigns Mac USB-iface = 10.7.0.1
+    sudo ifconfig <USB-iface> inet 10.7.0.1 netmask 255.255.255.0
+    # Enables kernel IP forwarding
+    sudo sysctl -w net.inet.ip.forwarding=1
+    # Loads pf NAT: masquerade 10.7.0.0/24 through WAN
+    # Rule: nat on <WAN> from 10.7.0.0/24 to any -> (<WAN>)
+    sudo pfctl -ef /tmp/usbnat.pf
+    ```
+  </Step>
+
+  <Step title="Configure the device side over SSH">
+    Connects to the device (tries ethernet `10.7.0.2` first, falls back to usbmux `iproxy 2222`) and runs three commands:
+
+    ```shell
+    # Assign static IP on the USB-ethernet interface
+    /sbin/ifconfig en2 inet 10.7.0.2 netmask 255.255.255.0
+    # Add default route pointing at the Mac
+    /sbin/route -n add default 10.7.0.1
+    # Register the primary IPv4 service + DNS in SCDynamicStore
+    /var/jb/netup
+    ```
+
+    `/var/jb/netup` is a compiled binary (source: `net/netup.c`) that calls into `SCDynamicStore` to make the system treat `en2` as the primary network service and sets DNS to `8.8.8.8` / `1.1.1.1`. It is signed ad-hoc **without** `get-task-allow`.
+  </Step>
+
+  <Step title="Verify connectivity">
+    Sends an HTTPS request to `apt.procurs.us` from the device using `curl` and prints the HTTP status code. `200` confirms end-to-end internet over USB.
+  </Step>
+</Steps>
+
+<Warning>
+**Do not rely on `169.254.x.x` link-local addresses.** macOS auto-assigns these to every new USB-ethernet interface, but they are randomly regenerated on every boot and every re-plug. Using them directly for SSH or routing will break silently. Always use the static `10.7.0.x` addresses that `net_up.sh` assigns — they are stable across reboots.
+</Warning>
+
+## Manual Steps (If `net_up.sh` Fails)
+
+If the script cannot detect the USB interface or the SSH connection times out, you can configure everything by hand.
+
+**On the Mac** — replace `en31` with your actual USB-ethernet interface name (check `ifconfig -l`):
+
+```shell
+SUDO_ASKPASS=/tmp/ap.sh sudo -A ifconfig en31 inet 10.7.0.1 netmask 255.255.255.0
+SUDO_ASKPASS=/tmp/ap.sh sudo -A sysctl -w net.inet.ip.forwarding=1
+printf 'nat on en0 from 10.7.0.0/24 to any -> (en0)\npass all\n' > /tmp/usbnat.pf
+SUDO_ASKPASS=/tmp/ap.sh sudo -A pfctl -ef /tmp/usbnat.pf
+```
+
+Replace `en0` with your WAN interface — find it with `route -n get default | awk '/interface:/{print $2}'`.
+
+**On the device** — connect over usbmux (`iproxy 2222 22`) and run:
+
+```shell
+/sbin/ifconfig en2 inet 10.7.0.2 netmask 255.255.255.0
+/sbin/route -n delete default 2>/dev/null; /sbin/route -n add default 10.7.0.1
+/var/jb/netup
+```
+
+## apt Proxy Cleanup
+
+If `apt update` prints `connect 127.0.0.1:8888` or Sileo reports packages as unavailable, a leftover proxy config from an earlier setup is redirecting traffic to a proxy that no longer exists. Delete it:
+
+```shell
+rm /var/jb/etc/apt/apt.conf.d/00proxy.conf
+```
+
+Restart Sileo afterward and pull to refresh. The `Hit` lines in `apt-get update` output confirm that the proxy is gone and the device is talking to the repositories directly.

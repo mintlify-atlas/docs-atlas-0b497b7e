@@ -1,0 +1,153 @@
+---
+title: "TrollVNC: Control the Jailbroken iPhone Screen over USB"
+sidebarTitle: "TrollVNC"
+description: "Set up TrollVNC to view and control the iPhone 11 Pro display over USB-ethernet using the trollvncserver binary and tvncd daemonizer."
+---
+
+TrollVNC gives you a live view of the iPhone 11 Pro display and full touch/gesture input, all over USB-ethernet. Since usbmux can reset mid-session at `kex`, the VNC connection goes directly to `10.7.0.2:5901` over the static USB-ethernet address rather than through `iproxy`. Two components are involved: `trollvncserver`, a prebuilt VNC server binary, and `tvncd`, a tiny daemonizer that spawns it with the correct process type. Both ship in `work-27.0b2/vnc/`.
+
+## Connection Details
+
+| Parameter | Value |
+|-----------|-------|
+| Address | `vnc://10.7.0.2:5901` |
+| Password | `alpine` |
+| Transport | USB-ethernet (static IP, not iproxy) |
+
+## One-Command Setup
+
+After a normal boot with the USB cable plugged in, run this from your Mac:
+
+```shell
+cd work-27.0b2 && ./vnc_up.sh
+```
+
+This single command runs `net_up.sh` to ensure the USB network is up, SSHes into the device to start `tvncd`, and opens macOS Screen Sharing pointed at `vnc://10.7.0.2:5901`. You should see the device screen appear in the Screen Sharing window within a few seconds.
+
+## Control Gestures
+
+| Mac gesture | Device action |
+|-------------|---------------|
+| Mouse click | Tap |
+| Click and drag | Swipe |
+| Right-click or two-finger click | Home button |
+
+## Manual Start (Network Already Up)
+
+If `net_up.sh` has already been run and you only need to (re)start the VNC server:
+
+```shell
+../tools/sshpass -p alpine ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@10.7.0.2 /var/jb/usr/bin/tvncd
+open "vnc://:alpine@10.7.0.2:5901"
+```
+
+The first line starts the daemon on the device. The second line opens macOS Screen Sharing directly to the VNC URL.
+
+## Full Setup Sequence
+
+<Steps>
+  <Step title="Ensure USB internet is working">
+    TrollVNC connects over the static USB-ethernet address. If `net_up.sh` has not been run since the last boot, do that first:
+
+    ```shell
+    cd work-27.0b2 && ./net_up.sh
+    ```
+
+    Wait for the `[✓] 200` confirmation before continuing.
+  </Step>
+
+  <Step title="Start tvncd on the device">
+    SSH into the device and launch the daemonizer:
+
+    ```shell
+    ../tools/sshpass -p alpine ssh \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      root@10.7.0.2 /var/jb/usr/bin/tvncd
+    ```
+
+    `tvncd` returns immediately — it spawns `trollvncserver` as a background App-type process and exits. The server continues running after the SSH session closes.
+  </Step>
+
+  <Step title="Open Screen Sharing on the Mac">
+    ```shell
+    open "vnc://:alpine@10.7.0.2:5901"
+    ```
+
+    macOS Screen Sharing will connect and display the device screen. If you prefer a third-party VNC client, point it at `10.7.0.2`, port `5901`, password `alpine`.
+  </Step>
+</Steps>
+
+## Components
+
+### `trollvncserver`
+
+`trollvncserver` is the actual VNC server binary, sourced from the `vphone-cli-storage` repository (`cfw_input.tar.zst → iosbinpack64/bin/trollvncserver`). It is an upstream build of [OwnGoalStudio/TrollVNC](https://github.com/OwnGoalStudio/TrollVNC) (GPLv2), which statically links `libvncserver` and `turbojpeg` to produce a self-contained binary.
+
+Before deployment it is re-signed ad-hoc, keeping all 243 original entitlements (which include QuartzCore screen-capture rights, HID event-dispatch/injection, and `IOSurface.protected-access`) while removing `get-task-allow`.
+
+<Note>
+The binary ships with `get-task-allow` **removed**. Do not add it back. AMFI treats any ad-hoc-signed binary with `get-task-allow` as a debug attachment target and will kill it immediately on non-developer-mode devices. Verify with: `ldid -e /var/jb/usr/bin/trollvncserver | grep -c get-task-allow` — the result must be `0`.
+</Note>
+
+### `tvncd` (source: `work-27.0b2/vnc/tvncd.c`)
+
+`tvncd` is a minimal C daemonizer whose sole job is to spawn `trollvncserver` with the right attributes. Its source is reproduced here for reference:
+
+```c
+#include <spawn.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <fcntl.h>
+extern char **environ;
+extern int posix_spawnattr_setprocesstype_np(posix_spawnattr_t*, int);
+#ifndef POSIX_SPAWN_SETSID
+#define POSIX_SPAWN_SETSID 0x0400
+#endif
+#define POSIX_SPAWN_PROC_TYPE_APP_DEFAULT 0x00000001
+int main(void){
+  posix_spawnattr_t a; posix_spawnattr_init(&a);
+  posix_spawnattr_setflags(&a, POSIX_SPAWN_SETSID);
+  posix_spawnattr_setprocesstype_np(&a, POSIX_SPAWN_PROC_TYPE_APP_DEFAULT);
+  posix_spawn_file_actions_t fa; posix_spawn_file_actions_init(&fa);
+  posix_spawn_file_actions_addopen(&fa,0,"/dev/null",O_RDONLY,0);
+  posix_spawn_file_actions_addopen(&fa,1,"/tmp/tvnc.log",O_WRONLY|O_CREAT|O_APPEND,0644);
+  posix_spawn_file_actions_adddup2(&fa,1,2);
+  setenv("TROLLVNC_PASSWORD","alpine",1);
+  setenv("DISABLE_TWEAKS","1",1);
+  char *av[]={"/var/jb/usr/bin/trollvncserver",0};
+  pid_t pid; int r=posix_spawn(&pid,av[0],&fa,&a,av,environ);
+  return r;
+}
+```
+
+Two design decisions in `tvncd` are non-negotiable:
+
+- **`POSIX_SPAWN_PROC_TYPE_APP_DEFAULT` (App process type):** `IOSurface` and the display subsystem only grant access to processes with an App process type. A standard daemon-type process receives `IOSurface 0x0` and `trollvncserver` immediately exits with "Failed to get screen dimensions". Only by spawning as an App can the server acquire a framebuffer.
+- **`POSIX_SPAWN_SETSID` (new session):** Creates a new process group, so the VNC server survives after the SSH session that launched `tvncd` disconnects. Without this, the server would die when the SSH connection drops.
+
+`tvncd` also redirects stdout and stderr to `/tmp/tvnc.log` on the device, and bakes in `TROLLVNC_PASSWORD=alpine` and `DISABLE_TWEAKS=1` as environment variables before spawning.
+
+<Warning>
+**Never run `trollvncserver` directly as a background daemon** (e.g. `trollvncserver &` or via `launchctl`). Without the App process type set by `tvncd`, IOSurface returns `0x0` and the server cannot obtain screen dimensions. Always start it through `tvncd`. The `launchctl` binary under `/var/jb` also aborts with "Symbol not found `_launch_active_user_switch`" on this build — do not use it.
+</Warning>
+
+## Install / Reinstall After a Clean Restore
+
+After flashing a clean CFW, the `vnc/` binaries need to be copied back to the device. From `work-27.0b2/`:
+
+```shell
+S=../tools/sshpass; O="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+$S -p alpine ssh $O root@10.7.0.2 'cat > /var/jb/usr/bin/trollvncserver && chmod +x /var/jb/usr/bin/trollvncserver' < vnc/trollvncserver
+$S -p alpine ssh $O root@10.7.0.2 'cat > /var/jb/usr/bin/tvncd && chmod +x /var/jb/usr/bin/tvncd' < vnc/tvncd
+```
+
+This streams each binary over stdin into the target path and marks it executable. After copying, start the server with `tvncd` as shown in the setup steps above.
+
+## Logs
+
+Server output is written to `/tmp/tvnc.log` on the device. Tail it over SSH to debug connection issues:
+
+```shell
+../tools/sshpass -p alpine ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@10.7.0.2 tail -f /tmp/tvnc.log
+```

@@ -1,72 +1,92 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "usbliter8-fun",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
-  },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "primary": "#E8550A",
+    "light": "#FF7A3D",
+    "dark": "#C43D00"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:support@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/34306/usbliter8-fun"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/34306/usbliter8-fun"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Guide",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "introduction",
+              "hardware-setup",
+              "requirements"
+            ]
+          },
+          {
+            "group": "Jailbreak Process",
+            "pages": [
+              "process/flash-cfw",
+              "process/sshrd-boot",
+              "process/normal-boot",
+              "process/get-past-setup"
+            ]
+          },
+          {
+            "group": "Post-Jailbreak",
+            "pages": [
+              "post/internet-usb",
+              "post/bootstrap-sileo",
+              "post/trollvnc"
+            ]
+          },
+          {
+            "group": "Troubleshooting",
+            "pages": [
+              "troubleshooting/common-issues",
+              "troubleshooting/boot-chain-tips"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Scripts",
+            "pages": [
+              "reference/make-cfw",
+              "reference/userland-patches",
+              "reference/disable-screentime",
+              "reference/tss-proxy-server",
+              "reference/net-up"
+            ]
+          },
+          {
+            "group": "Kernel & Firmware Patches",
+            "pages": [
+              "reference/kernel-patches",
+              "reference/firmware-components",
+              "reference/devicetree-patches"
+            ]
+          },
+          {
+            "group": "Tools",
+            "pages": [
+              "reference/tools-overview",
+              "reference/commands-cheatsheet"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

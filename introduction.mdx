@@ -1,0 +1,93 @@
+---
+title: "usbliter8-fun: iOS 27 Jailbreak Research Toolkit"
+sidebarTitle: "Introduction"
+description: "usbliter8-fun exploits the usbliter8 SecureROM bug on iPhone 11 Pro to flash a custom iOS 27 beta firmware with full kernel and userland patches."
+---
+
+**usbliter8-fun** is a research-grade jailbreak toolkit that targets the **iPhone 11 Pro (iPhone12,3)** running **iOS 27.0 beta**. It harnesses the `usbliter8` SecureROM exploit — a hardware-level bug in the A13 (T8030) chip — to enter PWN DFU mode and restore a fully patched custom firmware (CFW). The result is a tethered jailbreak with working SSH, Sileo package management, USB screen control via TrollVNC, and internet tethering over USB. This project is intended exclusively for developers who enjoy low-level platform research on a spare device.
+
+<Warning>
+  **Destructive operation — spare device only.** Restoring the custom firmware **permanently destroys** SEP, passcode, Wi-Fi, baseband, and all Apple services (iCloud, iMessage, FaceTime, etc.). Bluetooth partially survives. **Do not run this on any device you care about.** There is no recovery path to a healthy, SEP-intact state after this restore.
+</Warning>
+
+## What is usbliter8-fun?
+
+usbliter8-fun is a complete end-to-end toolchain for jailbreaking the iPhone 11 Pro on iOS 27.0 beta. It was built on top of wh1te4ever's original CFW and ramdisk work for iOS 27.0 beta 2 (`24A5370h`), extended with additional patches to cover iOS 27.0 beta 3 (`24A5380h`). The toolkit includes Python scripts that automate IPSW download, firmware patching (kernel, DeviceTree, userland binaries), TSS proxy serving, CFW restore, SSH ramdisk boot, and post-restore bootstrapping.
+
+Only **iPhone 11 Pro** is currently supported. Other devices require finding the correct offsets independently.
+
+## Exploit Chain Overview
+
+The jailbreak follows a five-stage chain:
+
+1. **SecureROM bug (usbliter8)** — A hardware-level vulnerability in the A12/A13 SecureROM, released by Paradigm Shift. The exploit is delivered via an RP2350 microcontroller (Raspberry Pi Pico 2) connected through a cut Lightning cable.
+2. **PWN DFU mode** — The Pico 2 fires the `usbliter8` payload over USB while the iPhone is in DFU mode. On success the device enters *PWN DFU*, a state where unsigned firmware can be loaded.
+3. **CFW restore** — `make_cfw.py` builds the patched firmware bundle; `restore_cfw.sh` drives `idevicerestore` through a local TSS proxy to flash it onto the device.
+4. **SSHRD (SSH ramdisk)** — A patched ramdisk is booted to mount the device's file system read-write and extract the AP ticket (`t8030_apticket.der`) needed for subsequent tethered boots.
+5. **Normal boot** — `get_boot.py` assembles the tethered boot chain and `boot.py` sends it. The device boots into iOS with all patches active.
+
+## Key Capabilities
+
+### Kernel Patches
+
+| Area | Effect |
+|---|---|
+| `isDeviceInRestoreMode` | USB Restricted Mode bypass |
+| Sandbox `file_check_mmap` / `mount_check_mount` / `remount` / `umount` / `vnode_check_rename` | Allows `/var/jb` execution; enables rootless bootstrap |
+| `AMFIIsCDHashInTrustCache` | Forces trust for all code hashes (trust everything) |
+| DeviceTree `ephemeral-storage` | Passes the 99% restore progress bar |
+
+### Userland Patches
+
+| Binary | Patch | Purpose |
+|---|---|---|
+| `mobileactivationd` `should_hactivate` | `mov w0,#1` at `0x2ebb14` | Hacktivation — bypasses activation server |
+| `mobileactivationd` `getActivationState` | NOP/ADRP/ADD chain at `0x327cb0–d18` | Returns "Activated" state |
+| `coreauthd` | NOP at `0x95c0` | Prevents SEP crash during setup |
+| `ctkd` | `mov x0,#0; ret` at `0x1b38/1b3c` | Prevents SEP crash during setup |
+| `launchd disabled.plist` | 5 service labels → `true` | Blocks `ScreenTimeAgent` to prevent Setup deadlock |
+
+### Additional Features
+
+- **ScreenTime / Setup bypass** — launchd plist edit prevents the `ScreenTimeAgent` XPC deadlock that stalls the Setup assistant.
+- **USB internet tethering** — `net_up.sh` shares the Mac's internet connection to the device over USB-ethernet (`10.7.0.x`), replacing the non-functional Wi-Fi and baseband.
+- **Sileo bootstrap** — A rootless Sileo bootstrap (`bootstrap_1900.tar.zst`) is installable over SSH after the first normal boot.
+- **TrollVNC** — `vnc_up.sh` starts `tvncd` on the device and opens macOS Screen Sharing to `vnc://10.7.0.2:5901`, giving full touch-screen control over USB.
+
+## Supported Device and Firmware
+
+| Item | Value |
+|---|---|
+| Device | iPhone 11 Pro (`iPhone12,3`, model `d421`) |
+| SoC | Apple A13 Bionic (`T8030`) |
+| iOS 27.0 beta 2 | Build `24A5370h` (primary; all offsets verified here) |
+| iOS 27.0 beta 3 | Build `24A5380h` (working directory `work-27.0b3/`) |
+
+> All binary patch offsets in the scripts are build-specific to **24A5370h / iPhone12,3**. They must be re-verified in IDA or a disassembler before applying to any other build.
+
+## Credits
+
+usbliter8-fun stands on the shoulders of excellent prior work:
+
+- [**wh1te4ever**](https://github.com/wh1te4ever) — original CFW and ramdisk patches for iOS 27.0 beta 2 (`24A5370h`)
+- [**khanhduytran0**](https://github.com/khanhduytran0) — ideas on DeviceTree patching and USB Restriction kernel bypass
+- [**tihmstar**](https://github.com/tihmstar) — `img4` / `img4tool` for signing IMG4 images with an APTicket
+- [**m1stadev**](https://github.com/m1stadev) / [**doronz88**](https://github.com/doronz88) — `pyimg4` / `pymobiledevice3` for kernelcache export and usbmux port forwarding
+- [**Lakr233**](https://github.com/Lakr233) — `trollvnc` for controlling the device display over USB
+
+## Quick Navigation
+
+<CardGroup cols={2}>
+  <Card title="Hardware Setup" icon="microchip" href="/hardware-setup">
+    Wire the Raspberry Pi Pico 2 (RP2350) to a cut Lightning cable and deliver the SecureROM exploit.
+  </Card>
+  <Card title="Requirements" icon="list-check" href="/requirements">
+    Install Python packages, download the iOS 27 IPSW, and verify all CLI tools are in place.
+  </Card>
+  <Card title="Flash Custom Firmware" icon="bolt" href="/process/flash-cfw">
+    Build and restore the patched CFW, run the TSS proxy, and get the AP ticket over SSHRD.
+  </Card>
+  <Card title="Commands Cheatsheet" icon="terminal" href="/reference/commands-cheatsheet">
+    Full reference for normal boot, SSHRD, SSH/iproxy, network tethering, and TrollVNC.
+  </Card>
+</CardGroup>

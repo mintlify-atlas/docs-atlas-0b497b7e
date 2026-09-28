@@ -1,0 +1,76 @@
+---
+title: "Hardware Setup: Wiring the Raspberry Pi Pico 2 Exploit Rig"
+sidebarTitle: "Hardware Setup"
+description: "Wire a Raspberry Pi Pico 2 (RP2350) to a cut Lightning cable to deliver the usbliter8 SecureROM exploit and enter PWN DFU mode on iPhone 11 Pro."
+---
+
+The `usbliter8` exploit targets a bug in the Apple A13 SecureROM that **cannot** be triggered purely in software from the host Mac — it requires sending a precisely-timed payload over USB at the hardware level. The **RP2350** microcontroller on the Raspberry Pi Pico 2 provides the low-level USB control needed to fire the exploit reliably. Once the payload lands, the device enters *PWN DFU mode*, a state where the bootrom accepts unsigned firmware images and the jailbreak chain can proceed. The exploit supports A12 and A13 devices (S4 and S5 Apple Watch are also supported by the same hardware).
+
+## Required Components
+
+- **Raspberry Pi Pico 2** (with RP2350 chip)
+- A **cut Lightning cable** (USB-A or USB-C donor, with the Lightning plug intact)
+- The exploit UF2/binary payload from the original [`usbliter8`](https://github.com/usbliter8/usbliter8) source
+
+<Steps>
+
+### Flash the exploit payload onto the Pico 2
+
+Download the exploit payload file from the original `usbliter8` source repository. To flash it, hold the **BOOTSEL** button on the Pico 2 while connecting it to your Mac — it will appear as a USB mass-storage drive. Drag the payload file onto that drive. The Pico 2 will reboot and the exploit firmware is ready.
+
+### Cut and strip the Lightning cable
+
+Cut the Lightning cable approximately 15 cm from the Lightning plug end. Strip the outer insulation to expose the four internal wires: **red** (VBUS / +5 V), **black** (GND), **white** (D−), and **green** (D+).
+
+### Wire the Lightning cable to the Pico 2
+
+Solder or use jumper connectors to attach the four wires to the correct Pico 2 GPIO pins:
+
+| Wire colour | Signal | Pico 2 pin |
+|-------------|--------|------------|
+| Red | VBUS (+5 V) | **VBUS** |
+| Black | Ground | **GND** |
+| White | D− (USB data minus) | **GP13** |
+| Green | D+ (USB data plus) | **GP12** |
+
+Ensure all connections are secure before powering the rig.
+
+### Put the iPhone 11 Pro into DFU mode
+
+With the device **powered off** and **not connected** to any USB cable, follow this button sequence:
+
+1. Hold the **Side button** for 3 seconds.
+2. While still holding the Side button, press and hold the **Volume Down button** for 10 seconds.
+3. Release the **Side button** but continue holding **Volume Down** for another 5 seconds.
+
+The screen must remain completely black. If the Apple logo appears, the timing was off — power down and retry.
+
+### Connect the iPhone to the Pico 2 rig
+
+Plug the Lightning end of the wired rig into the iPhone (already in DFU mode). Do **not** connect the Pico 2 to the Mac at this step; the Pico 2 runs autonomously from its own USB power or a separate supply while talking to the phone.
+
+<Note>
+  **LED indicator behaviour during the exploit:**
+
+  - The Pico 2 LED **blinks twice** while the exploit payload is being delivered.
+  - The LED **stays lit** when the exploit succeeds — the device is now in PWN DFU mode.
+  - If the LED **turns off**, the exploit failed. Disconnect the rig, re-enter DFU mode on the phone (repeat step 4), reconnect, and try again.
+</Note>
+
+### Connect the iPhone to your Mac
+
+Once the LED is **solid** (exploit succeeded), disconnect the iPhone from the Pico 2 rig and plug it directly into your Mac using a standard Lightning-to-USB cable. The device should enumerate on the Mac as an Apple Mobile Device in DFU mode.
+
+### Verify PWN DFU mode
+
+<Tip>
+  Open **System Information** on your Mac, go to **Hardware → USB**, and look for **Apple Mobile Device (DFU Mode)** in the device tree. Expand its entry and confirm the **Serial Number** field contains `PWND:[usbliter8]`. That string is the definitive sign that the SecureROM exploit landed successfully and the device will accept unsigned firmware.
+</Tip>
+
+If you do not see `PWND:[usbliter8]`, re-enter DFU mode and repeat the exploit step. Occasionally the exploit requires two or three attempts due to USB timing variance.
+
+</Steps>
+
+## What PWN DFU Enables
+
+After a successful exploit the Apple A13 bootrom no longer verifies the signature of firmware images sent by `irecovery` or `idevicerestore`. This makes it possible to restore a **custom firmware** (CFW) — a patched IPSW with modified kernel, DeviceTree, and userland binaries — which is the next step in the jailbreak chain. The tethered nature of the exploit means this process must be repeated on **every boot**: the device cannot start on its own without being re-exploited each time.

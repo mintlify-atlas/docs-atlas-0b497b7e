@@ -1,0 +1,112 @@
+---
+title: "Normal Boot: Building and Sending the Boot Chain"
+sidebarTitle: "Normal Boot"
+description: "Rebuild the normal boot chain with get_boot.py and send it to the device with boot.py to boot into iOS from PWN DFU mode."
+---
+
+This is a **tethered** jailbreak. The SecureROM exploit (usbliter8) patches the boot chain in RAM and is not persisted to flash, so every single power-on requires you to enter PWN DFU mode and re-send the boot chain from your Mac. There is no way around this limitation — the exploit is entirely in-memory and the device cannot boot autonomously.
+
+## What `get_boot.py` builds
+
+`get_boot.py` wipes `Ramdisk/` and rebuilds the **normal-boot chain** from scratch. It applies a different set of patches from the restore chain:
+
+- **iBSS / iBEC**: `image4_validate_property_callback` NOPed; boot-args set to `-v serial=3 debug=0x2014e launchd_unsecure_cache=1 wdt=-1`; nonce-preservation branch applied
+- **TXM**: same trustcache `memcmp` bypasses plus `_allowedBeforeSecureChannelOperational` stubbed to always return true
+- **DeviceTree**: `content-protect` disabled via `dt_patch2.py`; `ephemeral-storage=1` injected via `set_ephemeral.py`
+- **Kernelcache**: full set of SSV bypasses, AMFI patches, `PE_i_can_has_debugger`, USB Restricted Mode bypass, sandbox MACF hooks, and SEP-panic stubs
+- All firmware blobs (ANE, AOP, AVE, SPTM, GFX, ISP, PMP, RestoreTrustCache, SIO, WCH) and SEP are signed with `t8030_apticket.der`
+
+Critically, the normal-boot chain does **not** include `RestoreRamdisk.img4`. Verifying that `Ramdisk/` contains no `RestoreRamdisk` is the definitive way to confirm you are about to boot iOS and not the SSH ramdisk.
+
+<Warning>
+  Always run `get_boot.py` immediately before `boot.py`. If `Ramdisk/` still contains `RestoreRamdisk.img4` from a previous SSHRD build, `boot.py` will boot the SSH ramdisk instead of iOS. There is no runtime guard — the wrong chain boots silently.
+</Warning>
+
+## Steps
+
+<Steps>
+  <Step title="Enter DFU mode">
+    Hold **Side + Volume Down** for 10 seconds, then release the Side button. The screen should go completely black (DFU mode). If the device shows the recovery screen (USB cable icon), you held Side too long — try again.
+  </Step>
+
+  <Step title="Enter PWN DFU via the Pico 2">
+    Connect the Raspberry Pi Pico 2 rig to the device. The LED blinks twice during exploitation and remains lit on success. Verify the device is in PWN DFU mode:
+
+    ```python
+    python3 -c "import usb.core; print('pwndfu' if usb.core.find(idProduct=0x1227) else 'NO DFU')"
+    ```
+
+    If `NO DFU` is printed, re-enter DFU mode and retry the Pico exploit.
+  </Step>
+
+  <Step title="Plug the device back into the Mac">
+    Disconnect the Pico 2 rig and reconnect the device directly to the Mac via USB.
+  </Step>
+
+  <Step title="Rebuild the normal boot chain (mandatory)">
+    ```shell
+    SUDO_ASKPASS=/tmp/ap.sh ./get_boot.py
+    ```
+
+    This command is **mandatory** before every normal boot. It wipes `Ramdisk/` and repopulates it with the correct normal-boot images signed against `t8030_apticket.der`.
+  </Step>
+
+  <Step title="Verify no SSHRD chain is present">
+    ```shell
+    ls Ramdisk/ | grep -c RestoreRamdisk
+    # expected: 0
+    ```
+
+    A count of `0` confirms the normal-boot chain is loaded. Any value greater than 0 means the SSHRD chain is still present — repeat Step 4.
+  </Step>
+
+  <Step title="Send the boot chain and boot into iOS">
+    ```shell
+    ./boot.py
+    ```
+
+    `boot.py` sends the following sequence via `usbliter8ctl` and `irecovery`:
+
+    1. `iBSS.raw` (via `usbliter8ctl boot`)
+    2. `iBEC.img4`
+    3. `RestoreLogo.img4` (Apple logo splash)
+    4. Firmware blobs in order: ANE → AOP → AVE → SPTM → TXM → GFX → ISP → PMP → RestoreTrustCache → SIO → WCH
+    5. `DeviceTree.img4`
+    6. `SEP.img4`
+    7. `Kernelcache.img4` → `bootx`
+
+    The device will show the Apple logo, the status bar will fill, and iOS will boot to the Home screen (or Setup on the first boot).
+  </Step>
+</Steps>
+
+## SSH access after normal boot
+
+<Tip>
+  The default SSH password for both normal boot and SSHRD is **`alpine`**. Change it after setup if you plan to leave the device networked.
+</Tip>
+
+**Via iproxy (USB multiplexer):**
+
+```shell
+pkill -f "iproxy 2222"; iproxy 2222 22 &
+../tools/sshpass -p alpine ssh \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null \
+  -o PreferredAuthentications=password \
+  -o PubkeyAuthentication=no \
+  -p 2222 root@localhost
+```
+
+**Via USB Ethernet (after `net_up.sh`):**
+
+```shell
+ssh root@10.7.0.2
+```
+
+The static IP `10.7.0.2` is assigned to the device by `net_up.sh`. Wi-Fi and Baseband are non-functional on the CFW, so USB Ethernet is the only reliable network path.
+
+## APTicket and re-restores
+
+<Note>
+  `t8030_apticket.der` is extracted from the `sep-firmware.img4` that lives in the device's Preboot partition. This file changes after every clean CFW restore. If you reflash the device with `restore_cfw.sh`, you **must** boot the SSHRD again, mount Preboot, copy the new `sep-firmware.img4`, and re-run `img4tool -e -m t8030_apticket.der dev_sep.img4` before calling `get_boot.py`. Attempting a normal boot with a stale APTicket results in a black screen.
+</Note>

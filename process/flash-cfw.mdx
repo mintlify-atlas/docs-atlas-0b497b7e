@@ -1,0 +1,122 @@
+---
+title: "Flash the Custom Firmware to iPhone 11 Pro"
+sidebarTitle: "Flash CFW"
+description: "Build and restore the patched iOS 27 custom firmware using make_cfw.py and idevicerestore, with the local TSS proxy for beta ticket signing."
+---
+
+Flashing the custom firmware is the first major step in the usbliter8-fun jailbreak process. `make_cfw.py` patches each firmware component in place — from the earliest bootloader stages all the way through the kernel — and then `restore_cfw.sh` drives `idevicerestore` to write the result to the device. Because iOS 27.0 beta 2 carries no valid Apple signing ticket, a local TSS proxy intercepts the ticket request and injects the eUICC keys needed to get a valid response from `gs.apple.com`.
+
+<Warning>
+  This process **erases the entire device**. SEP, passcode, Wi-Fi, Baseband, and all Apple services will be non-functional after flashing. Run this only on a spare iPhone 11 Pro — never on a primary device.
+</Warning>
+
+## Prerequisites
+
+- Device is in **PWN DFU mode** (Raspberry Pi Pico 2 exploit completed — Pico LED stays lit).
+- You are inside the `work-27.0b2/` directory for all commands.
+- The iOS 27.0 beta 2 IPSW has been downloaded and extracted by `get_fw.py`.
+- Python packages installed: `pip3 install requests pyimg4 pymobiledevice3`.
+- A sudo askpass helper is configured so that `hdiutil` can escalate without an interactive prompt:
+
+```shell
+cat > /tmp/ap.sh <<'EOF'
+#!/bin/sh
+/usr/bin/osascript -e 'display dialog "sudo password:" default answer "" with hidden answer' -e 'text returned of result'
+EOF
+chmod +x /tmp/ap.sh
+```
+
+## What `make_cfw.py` patches
+
+`make_cfw.py` applies targeted binary patches to six firmware components before packing them back into the `CFW/` directory consumed by `idevicerestore`.
+
+| Component | What is patched |
+|---|---|
+| **iBSS** | `image4_validate_property_callback` → NOP + `mov x0,#0`; boot-args set to `-v wdt=-1 rd=md0 -restore` |
+| **iBEC** | Same `image4_validate_property_callback` NOP; nonce-preservation branch (`b #0x28`); restore boot-args |
+| **DeviceTree** | `content-protect` node disabled via `dt_patch2.py` |
+| **RestoreRamdisk** | `restored_external` FDR-step bypass (`mov x0,#0` at `0x7e53c`); `asr` signature-verification NOP (`0x24d34`); baseband-detection stubs zeroed; both re-signed ad-hoc |
+| **TXM** | Three `memcmp` calls in `_queryModule0/1/2` patched to `mov x0,#0`; two instructions in `_validateConstraintsSignatureType` NOPed; PAYP structure preserved |
+| **Kernelcache** | SSV panics NOPed; `AMFIIsCDHashInTrustCache` → always returns 1; `PE_i_can_has_debugger` returns 1; launch-constraint and DYLD-policy checks bypassed; USB Restricted Mode bypassed; sandbox MACF hooks zeroed for `/var/jb` paths; SEP panic paths stubbed |
+
+<Accordion title="Why the TSS proxy is needed">
+  iOS 27.0 beta 2 (build `24A5370h`) is an unsigned beta — Apple's production TSS server (`gs.apple.com`) returns `STATUS=168` for its ECID/nonce combination, indicating the board is not entitled for this build. The proxy (`tss_proxy_server.py`) listens on `127.0.0.1:1337`, forwards the original request unchanged, and when it sees `STATUS=168` it injects four eUICC keys (`eUICC,ApProductionMode`, `eUICC,ChipID`, `eUICC,EID`, `eUICC,RootKeyIdentifier`) into the plist body before re-sending to Apple. The retry typically returns a valid signing ticket that `idevicerestore` can use.
+</Accordion>
+
+## Restore procedure
+
+<Steps>
+  <Step title="Enter PWN DFU mode">
+    Put the device into DFU mode (hold Side + Volume Down for 10 s, then release Side only). Connect it to the Raspberry Pi Pico 2 rig. The Pico LED blinks twice while exploiting and stays lit on success. Confirm in macOS **System Information → USB**:
+
+    ```
+    Apple Mobile Device (DFU Mode) — PWND:[usbliter8]
+    ```
+
+    If the LED turns off, re-enter DFU and try again.
+  </Step>
+
+  <Step title="Plug device back into the Mac">
+    Disconnect the Pico rig and connect the device directly to the Mac via USB.
+  </Step>
+
+  <Step title="Change into the working directory">
+    ```shell
+    cd work-27.0b2
+    ```
+  </Step>
+
+  <Step title="Build the custom firmware">
+    ```shell
+    SUDO_ASKPASS=/tmp/ap.sh ./make_cfw.py
+    ```
+
+    The script uses `sudo -A hdiutil` to mount and modify the RestoreRamdisk DMG. A macOS password dialog will appear via the askpass helper — do not enter the password in the terminal. The script backs up each original component with a `.bak` suffix on first run, so re-running is safe.
+  </Step>
+
+  <Step title="Start the TSS proxy server (separate terminal)">
+    Open a new terminal window and run:
+
+    ```shell
+    python3 tss_proxy_server.py
+    ```
+
+    You should see:
+
+    ```
+    Server running on http://127.0.0.1:1337 ...
+    ```
+
+    Leave this terminal open for the duration of the restore.
+  </Step>
+
+  <Step title="Run the restore">
+    Back in your original terminal:
+
+    ```shell
+    ./restore_cfw.sh
+    ```
+
+    Internally this script sends iBSS via `usbliter8ctl`, waits 3 seconds, then runs:
+
+    ```shell
+    idevicerestore -s "http://127.0.0.1:1337" -e -y CFW
+    ```
+
+    The `-s` flag redirects TSS requests to the local proxy. The `-e` flag performs an erase restore. You will see a progress bar on the device screen. The restore takes several minutes.
+  </Step>
+
+  <Step title="Wait for recovery mode">
+    When `idevicerestore` finishes the device reboots into recovery mode (Apple logo + progress bar, then black screen with USB cable icon). This is expected — the device is not yet activated and requires the SSHRD boot step next to extract the APTicket.
+  </Step>
+</Steps>
+
+<Warning>
+  If the restore fails with a **`panic 'enter restore mode'`** message in the `idevicerestore` output, the device has panicked mid-restore. Perform a **cold reset** (hold Side + Volume Down until the screen goes dark, then release), wait 10 seconds, re-enter DFU mode and PWN DFU mode, then repeat from Step 3. Do not skip `make_cfw.py` — the `CFW/` directory from a previous run is safe to reuse.
+</Warning>
+
+## The `Ramdisk/` directory
+
+<Note>
+  `Ramdisk/` always contains the chain from the **most recent build**. `make_cfw.py` builds the restore chain (which includes `RestoreRamdisk.img4`). `get_boot.py` builds the normal-boot chain (no `RestoreRamdisk`). `get_rd.py` builds the SSHRD chain (with `RestoreRamdisk`). **Never mix chains.** Before each boot operation, always run the corresponding builder to ensure `Ramdisk/` matches the intended boot target.
+</Note>

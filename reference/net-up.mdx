@@ -1,0 +1,131 @@
+---
+title: "net_up.sh: Reverse USB Tethering for iPhone CFW"
+sidebarTitle: "net_up.sh"
+description: "Configures Mac-side pf NAT and static IP on the USB-ethernet interface, then SSHes into the device to set up routing and DNS via /var/jb/netup."
+---
+
+Wi-Fi, Baseband, and normal network activation are all non-functional on the usbliter8 CFW. `net_up.sh` provides internet access by routing traffic from the device through the Mac over the USB-ethernet link that iOS exposes when plugged in. One command handles the entire setup on both sides of the connection — static IPs, IP forwarding, pf NAT, and the device-side routing table — then verifies connectivity with an HTTP request.
+
+## Location
+
+```
+work-27.0b2/net_up.sh
+```
+
+## Usage
+
+Run on the Mac after every normal boot, while the device is plugged in via USB:
+
+```shell
+cd work-27.0b2 && ./net_up.sh
+```
+
+A successful run ends with the HTTP response code for `apt.procurs.us`. An HTTP `200` means the device has working internet via USB tethering.
+
+## Static IP Assignments
+
+These addresses are baked into the script and into `/var/jb/netup` on the device. They must match on both sides.
+
+| Endpoint | Interface | Address |
+|----------|-----------|---------|
+| Mac USB-ethernet | detected automatically | `10.7.0.1/24` |
+| Device | `en2` | `10.7.0.2/24` |
+| Device default gateway | — | `10.7.0.1` |
+| Device DNS | — | `8.8.8.8`, `1.1.1.1` |
+
+## Askpass Helper
+
+If `/tmp/ap.sh` does not already exist when the script starts, it is created automatically. The helper uses `osascript` to display a macOS password dialog and prints the result to stdout, so `sudo` never needs a terminal. The script is `chmod +x`'d and exported as `SUDO_ASKPASS` before any `sudo -A` call is made.
+
+## Script Steps
+
+<Steps>
+  <Step title="Detect the Mac WAN interface">
+    ```shell
+    WAN=$(route -n get default | awk '/interface:/{print $2}')
+    ```
+    If no default route exists the script exits immediately with an error.
+  </Step>
+  <Step title="Discover the USB-ethernet interface">
+    The script iterates every active `en*` interface (excluding the WAN interface). It prefers an interface that currently holds a **link-local** `169.254.x.x` address — this is the freshly-enumerated USB-ethernet interface after a device reboot. If no link-local interface is found, it falls back to whichever `en*` interface already holds `10.7.0.1` (a stale assignment from a previous run).
+
+    Before proceeding, any stale `10.7.0.1` assignment on interfaces other than the selected USB interface is removed to prevent IP conflicts.
+  </Step>
+  <Step title="Configure the Mac side">
+    ```shell
+    # Assign static IP to the USB interface
+    sudo -A ifconfig <usbif> inet 10.7.0.1 netmask 255.255.255.0
+
+    # Enable IP forwarding
+    sudo -A sysctl -w net.inet.ip.forwarding=1
+
+    # Load pf NAT rule
+    printf 'nat on %s from 10.7.0.0/24 to any -> (%s)\npass all\n' "$WAN" "$WAN" \
+      > /tmp/usbnat.pf
+    sudo -A pfctl -ef /tmp/usbnat.pf
+    ```
+  </Step>
+  <Step title="Start iproxy as a fallback SSH tunnel">
+    ```shell
+    pkill -f "iproxy 2222"
+    iproxy 2222 22 &
+    ```
+    `iproxy` multiplexes SSH over usbmux on port 2222. This lets the script SSH to the device even before `10.7.0.2` is configured on its `en2` interface.
+  </Step>
+  <Step title="Configure the device side over SSH">
+    The script attempts SSH up to four times. Each attempt tries the ethernet address (`root@10.7.0.2`) first, then the usbmux tunnel (`root@localhost -p 2222`). On success, the following commands run on the device:
+
+    ```shell
+    /sbin/ifconfig en2 inet 10.7.0.2 netmask 255.255.255.0
+    /sbin/route -n delete default
+    /sbin/route -n add default 10.7.0.1
+    /var/jb/netup
+    ```
+
+    `/var/jb/netup` configures the SCDynamicStore primary service and sets DNS to `8.8.8.8` / `1.1.1.1` so that higher-level networking (Safari, apt, Sileo) can resolve hostnames.
+  </Step>
+  <Step title="Verify connectivity">
+    ```shell
+    curl -s -o /dev/null -w "%{http_code}\n" --max-time 12 https://apt.procurs.us/
+    ```
+    This runs on the device via SSH. An HTTP `200` confirms that the NAT and routing are working correctly. Any other response indicates a problem with the USB connection, the NAT rule, or the device-side routing.
+  </Step>
+</Steps>
+
+## Manual Steps
+
+If you need to configure the connection by hand (for example, to debug a specific step), the individual commands are:
+
+**Mac side:**
+
+```shell
+SUDO_ASKPASS=/tmp/ap.sh sudo -A ifconfig en31 inet 10.7.0.1 netmask 255.255.255.0
+SUDO_ASKPASS=/tmp/ap.sh sudo -A sysctl -w net.inet.ip.forwarding=1
+printf 'nat on en0 from 10.7.0.0/24 to any -> (en0)\npass all\n' > /tmp/usbnat.pf
+SUDO_ASKPASS=/tmp/ap.sh sudo -A pfctl -ef /tmp/usbnat.pf
+```
+
+*(Replace `en31` with the actual USB interface name and `en0` with your WAN interface.)*
+
+**Device side (run in SSH):**
+
+```shell
+/sbin/ifconfig en2 inet 10.7.0.2 netmask 255.255.255.0
+/sbin/route -n delete default
+/sbin/route -n add default 10.7.0.1
+/var/jb/netup
+```
+
+<Warning>
+  The `169.254.x.x` link-local address assigned to the USB-ethernet interface changes every time the device reboots and re-enumerates. Never hardcode a `169.254.x.x` address in scripts or SSH configs — always run `net_up.sh` after each normal boot to re-detect the interface and re-apply the static `10.7.0.x` assignment.
+</Warning>
+
+<Warning>
+  If `apt update` reports a connection error to `127.0.0.1:8888`, an old proxy configuration file is present from a previous setup. Delete it on the device:
+
+  ```shell
+  rm /var/jb/etc/apt/apt.conf.d/00proxy.conf
+  ```
+
+  Then run `apt update` again. Sileo may also need to be killed and reopened to pick up the change.
+</Warning>

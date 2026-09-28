@@ -1,0 +1,174 @@
+---
+title: "Troubleshooting Common Issues with usbliter8-fun CFW"
+sidebarTitle: "Common Issues"
+description: "Diagnose and fix the most frequent problems: wrong boot chain, black screen, network failures, app crashes, apt errors, and TrollVNC IOSurface failures."
+---
+
+This page covers the most common problems encountered when working with the usbliter8-fun iOS 27 custom firmware on iPhone 11 Pro (A13/T8030). Because this is a tethered jailbreak, many issues trace back to chain management, stale APTicket state, or environment quirks that differ from a standard jailbreak. Work through the relevant accordion below whenever something goes wrong.
+
+<AccordionGroup>
+
+  <Accordion title="Normal boot boots into SSHRD instead">
+    **Cause:** You forgot to run `get_boot.py` before booting. The `Ramdisk/` directory still holds the SSHRD chain from the last build, so `boot.py` sends the wrong chain to the device.
+
+    **Fix:** Always regenerate the normal-boot chain immediately before sending it:
+
+    ```shell
+    # Device must already be in PWN DFU
+    ./get_boot.py   # rebuilds the normal chain (ephemeral + APTicket + kernel patch)
+    ./boot.py       # sends the chain → boots into Home
+    ```
+
+    See also [Boot Chain Tips](/troubleshooting/boot-chain-tips) for the golden rule on chain switching.
+  </Accordion>
+
+  <Accordion title="Black screen on normal boot">
+    **Cause:** The APTicket stored on disk is stale — it was not re-dumped after the last clean restore. The kernel cannot validate the boot objects and the display never initialises.
+
+    **Fix:** Boot into SSHRD, mount the Preboot volume, and extract the SEP firmware to regenerate a fresh APTicket:
+
+    ```shell
+    # --- On the device over SSH ---
+    /sbin/mount_apfs -o rdonly /dev/disk1s6 /mnt6
+    find /mnt6 -name sep-firmware.img4
+    # scp or cat the located file back to the Mac, saving it as dev_sep.img4
+    ```
+
+    Then, back on the Mac:
+
+    ```shell
+    ../tools/img4tool -e -m t8030_apticket.der dev_sep.img4
+    ```
+
+    After the APTicket is updated, re-run `get_boot.py` and `boot.py` to attempt a normal boot again.
+  </Accordion>
+
+  <Accordion title="`usb.core` reports iOS-USB but device is actually in SSHRD">
+    **Cause:** SSHRD enumerates over USB with product ID `0x12a8`, which is the same product ID a normally running iOS device uses. `usb.core` therefore cannot distinguish between the two states.
+
+    **Fix:** SSH into the device and check the root mount to determine which chain is active:
+
+    ```shell
+    /sbin/mount | grep -q 'md0 on /' && echo SSHRD || echo NORMAL
+    ```
+
+    - `SSHRD` — root is `/dev/md0` (the RAM disk); System is at `/mnt1`, Data at `/mnt2`, Preboot at `disk1s6`.
+    - `NORMAL` — root is `disk1s1` (System, read-only at boot); `/var` is the Data volume (read-write).
+  </Accordion>
+
+  <Accordion title="App opens to black screen / crashes immediately">
+    **Cause:** The binary still carries the `get-task-allow` entitlement. AMFI kills any ad-hoc signed binary that presents this entitlement because it is not permitted outside a debugging context.
+
+    **Fix:** Re-sign the binary after stripping `get-task-allow` from its entitlement list:
+
+    ```shell
+    # Export the current entitlements (keep a .orig backup first)
+    cp binary binary.orig
+    ldid -e binary.orig > ents.plist
+
+    # Open ents.plist in a text editor and remove the get-task-allow key/value pair,
+    # then re-sign with the cleaned entitlements:
+    ldid -S ents.plist -Cadhoc binary
+    ```
+
+    The `trollvncserver` binary ships with `get-task-allow` already stripped and 243 entitlements preserved — use it as a reference example.
+  </Accordion>
+
+  <Accordion title="After reboot, USB network is gone (169.254.x.x link-local)">
+    **Cause:** The link-local address (`169.254.x.x`) is assigned randomly on each boot. It does not persist, so any routes or DNS settings configured in a previous session are lost.
+
+    **Fix:** Run `net_up.sh` after every normal boot to force a static `10.7.0.x` assignment on both ends of the USB-ethernet link:
+
+    ```shell
+    # Mac — device must be on normal boot and plugged in via USB
+    cd work-27.0b2 && ./net_up.sh
+    ```
+
+    The script sets `en31=10.7.0.1` on the Mac, enables `ip.forwarding`, configures a `pf` NAT rule for `10.7.0.0/24 → en0`, and assigns `en2=10.7.0.2` plus a default route on the device. It prints `200` on success.
+
+    <Warning>
+      Never rely on the auto-assigned `169.254.x.x` address. It is random on every boot and will cause `netup` and route configuration to fail silently.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="`apt update` reports `connect 127.0.0.1:8888` / package unavailable">
+    **Cause:** An old proxy configuration file (`00proxy.conf`) is still present, pointing `apt` at a local proxy on port `8888` that no longer exists.
+
+    **Fix:** Delete the stale proxy config file, then force Sileo to refresh:
+
+    ```shell
+    rm /var/jb/etc/apt/apt.conf.d/00proxy.conf
+    ```
+
+    After removing the file, kill Sileo and reopen it, then pull down to refresh the source list. The `apt update` output should now show `Hit` lines rather than connection-refused errors.
+  </Accordion>
+
+  <Accordion title="SSH via `iproxy 2222` resets during key exchange">
+    **Cause:** The usbmux tunnel managed by `iproxy` can reset at the SSH key-exchange phase. The dropbear daemon on the device itself is unaffected and remains alive; only the usbmux relay is dropping the connection.
+
+    **Fix:** Bypass `iproxy` entirely and SSH directly over the USB-ethernet interface (requires `net_up.sh` to have been run first):
+
+    ```shell
+    ssh root@10.7.0.2
+    # password: alpine
+    ```
+
+    This connects over the static USB-ethernet IP rather than through the usbmux relay, avoiding the reset at key exchange.
+  </Accordion>
+
+  <Accordion title='TrollVNC "Failed to get screen dimensions" / IOSurface 0x0'>
+    **Cause:** You ran `trollvncserver` directly as a standard daemon process. Only an **App-type** process has the display entitlements needed to capture the screen via `IOSurface`. A plain daemon process returns a `0x0` surface and fails immediately.
+
+    **Fix:** Always launch `trollvncserver` through `tvncd`, which uses `posix_spawn` with the App process type and `SETSID`:
+
+    ```shell
+    # From the Mac (device on normal boot, net_up.sh already run)
+    ../tools/sshpass -p alpine ssh \
+      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      root@10.7.0.2 /var/jb/usr/bin/tvncd
+    open "vnc://:alpine@10.7.0.2:5901"
+    ```
+
+    Or use the one-liner script:
+
+    ```shell
+    cd work-27.0b2 && ./vnc_up.sh
+    ```
+
+    Server logs are written to `/tmp/tvnc.log` on the device if you need to diagnose further.
+  </Accordion>
+
+  <Accordion title='`launchctl` aborts with "Symbol not found _launch_active_user_switch"'>
+    **Cause:** The rootless `launchctl` binary (`/var/jb/bin/launchctl`) is not compatible with this build of iOS 27. The `bootstrap` and `bootout` subcommands reference a symbol that is not present, causing an immediate abort.
+
+    **Fix:** Do not use `launchctl bootstrap` or `launchctl bootout` to manage daemons on this build. Instead, use the `tvncd` spawn pattern (App-type `posix_spawn`) or write directly to the launchd property-list cache to register persistent jobs.
+  </Accordion>
+
+  <Accordion title="Exploit LED turns off (exploit failed)">
+    **Cause:** The Raspberry Pi Pico 2 exploit rig encountered a USB connection issue, or the device was not in a clean DFU state when the exploit was attempted. The Pico 2 blinks twice while exploiting and stays lit on success; a light-off means the exploit did not complete.
+
+    **Fix:**
+
+    1. Re-enter DFU mode on the iPhone 11 Pro.
+    2. Reconnect the lightning cable to the Pico 2 rig.
+    3. Wait for the double-blink and confirm the LED stays on.
+    4. Verify PWN DFU in **System Configuration → USB tab**: you should see `PWND:[usbliter8]`.
+    5. Proceed with `get_boot.py` / `boot.py` or the SSHRD sequence.
+  </Accordion>
+
+  <Accordion title='Panic "enter restore mode" during CFW restore'>
+    **Cause:** This is a known intermittent panic that can occur during `idevicerestore` when flashing the custom firmware. It is not deterministic and does not indicate a permanent hardware or software fault.
+
+    **Fix:** Perform a cold reset of the device (hold Volume Down + Side button until the Apple logo appears, or hold all buttons if that does not respond), then re-run the full restore sequence from the Mac:
+
+    ```shell
+    cd work-27.0b2
+    SUDO_ASKPASS=/tmp/ap.sh ./make_cfw.py
+    python3 tss_proxy_server.py &
+    ./restore_cfw.sh
+    ```
+
+    If the panic recurs, cold-reset again and retry. The restore typically succeeds within one or two attempts.
+  </Accordion>
+
+</AccordionGroup>

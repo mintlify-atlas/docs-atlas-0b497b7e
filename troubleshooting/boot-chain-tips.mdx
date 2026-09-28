@@ -1,0 +1,161 @@
+---
+title: "Boot Chain Tips: Managing Normal Boot vs SSHRD Chains"
+sidebarTitle: "Boot Chain Tips"
+description: "Understand the tethered boot chain structure, the Ramdisk directory, and the golden rule for switching between normal boot and SSH ramdisk without booting the wrong chain."
+---
+
+The usbliter8-fun jailbreak is **tethered**: the iPhone 11 Pro cannot boot on its own after a clean restore. Every single boot — whether into iOS or into the SSH ramdisk — requires the device to be put into DFU mode, exploited into PWN DFU via the Raspberry Pi Pico 2 rig, and then sent the correct boot chain from the Mac. Skipping any of these steps, or sending the wrong chain, produces silent failures that are hard to diagnose. This page explains how the chain directory works, the rule you must never break, and how to verify the state of both the Mac-side directory and the device at runtime.
+
+---
+
+## The `Ramdisk/` Directory
+
+All work happens inside `work-27.0b2/`. The `Ramdisk/` subdirectory is the staging area for whichever boot chain will be sent to the device next. It is **not** a permanent store of both chains — it always contains the chain from the **most recent build or copy operation**.
+
+- **Normal boot chain**: produced by `get_boot.py`. Contains patched iBSS, iBEC, Kernelcache, DeviceTree, TXM, and SEP images assembled for booting into iOS. Does **not** contain a `RestoreRamdisk` image.
+- **SSHRD chain**: restored from `Ramdisk_SSH_bak/` by copying it over `Ramdisk/`. Contains a `RestoreRamdisk` image that the device mounts as its root filesystem.
+
+Because both chains live in the same directory at different times, you must always load the right one immediately before booting. There is no safeguard — `boot.py` and `boot_rd.sh` both blindly send whatever is currently in `Ramdisk/`.
+
+---
+
+## The Golden Rule
+
+<Warning>
+  **`Ramdisk/` always holds the chain from the most recent build.**
+
+  - Want **normal boot** → run `get_boot.py` **right before** `boot.py`. Do not skip it even once.
+  - Want **SSHRD** → run `cp -r Ramdisk_SSH_bak Ramdisk` **right before** `boot_rd.sh`.
+
+  Forgetting the rebuild step means booting the wrong chain — for example, intending to boot normally but landing in SSHRD instead.
+</Warning>
+
+---
+
+## Switching Chains Step by Step
+
+### Switching to Normal Boot
+
+<Steps>
+  <Step title="Confirm the device is in PWN DFU">
+    ```shell
+    python3 -c "import usb.core;print('pwndfu' if usb.core.find(idProduct=0x1227) else 'NO DFU')"
+    ```
+    The output must be `pwndfu`. If it prints `NO DFU`, re-enter DFU mode and re-run the Pico 2 exploit.
+  </Step>
+  <Step title="Rebuild the normal boot chain">
+    ```shell
+    cd work-27.0b2
+    SUDO_ASKPASS=/tmp/ap.sh ./get_boot.py
+    ```
+    This assembles the ephemeral storage patch, APTicket, and kernel patches into `Ramdisk/`.
+  </Step>
+  <Step title="Verify the chain is normal (no RestoreRamdisk)">
+    ```shell
+    ls Ramdisk/ | grep -c RestoreRamdisk
+    # Expected output: 0
+    # 0 = normal chain loaded ✓
+    # 1 or more = SSHRD chain still present ✗ — go back to Step 2
+    ```
+  </Step>
+  <Step title="Send the chain and boot">
+    ```shell
+    ./boot.py
+    ```
+    The device will boot into the iOS Home Screen.
+  </Step>
+</Steps>
+
+### Switching to SSHRD
+
+<Steps>
+  <Step title="Confirm the device is in PWN DFU">
+    ```shell
+    python3 -c "import usb.core;print('pwndfu' if usb.core.find(idProduct=0x1227) else 'NO DFU')"
+    ```
+    The output must be `pwndfu`.
+  </Step>
+  <Step title="Restore the SSHRD chain from backup">
+    ```shell
+    cd work-27.0b2
+    rm -rf Ramdisk && cp -r Ramdisk_SSH_bak Ramdisk
+    ```
+  </Step>
+  <Step title="Verify the chain is SSHRD (RestoreRamdisk present)">
+    ```shell
+    ls Ramdisk/ | grep -c RestoreRamdisk
+    # Expected output: 1
+    # 1 = SSHRD chain loaded ✓
+    # 0 = normal chain — go back to Step 2
+    ```
+  </Step>
+  <Step title="Send the chain and boot">
+    ```shell
+    ./boot_rd.sh
+    ```
+    The device will boot into the SSH ramdisk environment.
+  </Step>
+</Steps>
+
+---
+
+## Telling SSHRD from Normal Boot After SSH Login
+
+Because `usb.core` cannot distinguish SSHRD from a normal iOS boot by USB product ID alone (both enumerate as `0x12a8`), always verify the active chain by inspecting the root mount after SSH-ing in:
+
+```shell
+/sbin/mount | grep -q 'md0 on /' && echo "SSHRD (ramdisk)" || echo "NORMAL boot"
+```
+
+- **`SSHRD (ramdisk)`** — root is `/dev/md0` (read-only RAM disk). System is mounted at `/mnt1`, Data at `/mnt2`, Preboot at `disk1s6`.
+- **`NORMAL boot`** — root is `disk1s1` (System, read-only at boot). `/var` is the Data volume (read-write).
+
+---
+
+## Boot Chain Component Overview
+
+The following table describes every image sent to the device and what has been patched for this build. All offsets are specific to build **24A5370h / iPhone12,3** — re-verify them in IDA for any other build.
+
+<Note>
+  | Component | Role | Patch status |
+  |---|---|---|
+  | **iBSS** | Initial Boot Secondary Stage — first bootloader loaded by SecureROM after PWN DFU | Patched: `image4_validate` NOP'd; custom `boot-args` injected |
+  | **iBEC** | Initial Boot Execution Context — second-stage bootloader; hands off to the kernel | Patched: same as iBSS, plus nonce preservation |
+  | **Kernelcache** | XNU kernel for iPhone 11 Pro | Patched: SSV, AMFI (`AMFIIsCDHashInTrustCache → mov x0,#1`), trustcache, launch constraints, `seprmvr64`, sandbox `file_check_mmap`, and USB Restricted Mode bypasses |
+  | **DeviceTree** | Hardware description blob consumed by iBEC and the kernel | Patched: `content-protect` disabled; `ephemeral-storage` set to `u32=1` (required to pass the 99% progress bar) |
+  | **TXM** | Trust eXecution Monitor — enforces binary trust policy in userspace | Patched: allows unregistered (ad-hoc signed) binaries to execute |
+  | **SEP** | Secure Enclave Processor firmware | **Not patched** — used as-is from the APTicket-verified slot; `coreauthd` and `ctkd` userland daemons are patched instead to prevent SEP crashes |
+  | **RestoreTrustCache** | Trust cache applied during restore | Used during the CFW restore to whitelist the bootstrap binaries |
+</Note>
+
+---
+
+## APTicket Lifecycle
+
+<Warning>
+  You **must** re-dump the APTicket after every clean restore. Reusing a stale APTicket from a previous restore will cause a black screen on normal boot.
+</Warning>
+
+The APTicket is extracted from the SEP firmware image located on the Preboot volume (`/dev/disk1s6`). The workflow is:
+
+<Steps>
+  <Step title="Boot into SSHRD and mount Preboot">
+    ```shell
+    /sbin/mount_apfs -o rdonly /dev/disk1s6 /mnt6
+    find /mnt6 -name sep-firmware.img4
+    ```
+  </Step>
+  <Step title="Copy the SEP firmware to the Mac">
+    Use `scp` or pipe via `cat` over SSH to bring the located `sep-firmware.img4` to the Mac. Save it as `dev_sep.img4` inside `work-27.0b2/`.
+  </Step>
+  <Step title="Extract the APTicket">
+    ```shell
+    ../tools/img4tool -e -m t8030_apticket.der dev_sep.img4
+    ```
+    The resulting `t8030_apticket.der` is picked up automatically by `get_boot.py` during the next normal boot build.
+  </Step>
+</Steps>
+
+<Tip>
+  The SSHRD boot log prints to the terminal as the ramdisk runs. Seeing log output scroll by confirms the SSHRD boot chain was sent correctly and the device is responsive over SSH.
+</Tip>

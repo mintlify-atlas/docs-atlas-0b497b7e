@@ -1,0 +1,159 @@
+---
+title: "Boot SSH Ramdisk (SSHRD) for Filesystem Access"
+sidebarTitle: "SSHRD Boot"
+description: "Boot the iPhone 11 Pro into an SSH ramdisk environment to mount APFS volumes, dump the SEP firmware, and extract the APTicket for normal boot."
+---
+
+Before you can perform a normal boot, the device must provide a `sep-firmware.img4` that was written to Preboot during the CFW restore. This file is needed to extract the APTicket (`t8030_apticket.der`) that signs every component in the normal boot chain. The SSH ramdisk (SSHRD) is a minimal bootable ramdisk with a dropbear SSH server built in, giving you shell access to mount and read the APFS volumes without booting iOS proper.
+
+## What is the SSHRD?
+
+The SSHRD is a custom ramdisk image that `get_rd.py` builds into `Ramdisk/RestoreRamdisk.img4`. When `boot_rd.sh` sends the SSHRD chain to the device, the kernel mounts this ramdisk as `/` (`/dev/md0`) in read-only mode. The iOS system, data, and preboot partitions are left unmounted and can be attached manually with `mount_apfs`. A dropbear SSH server starts automatically on port 22, reachable over USB via `iproxy`.
+
+<Warning>
+  **The golden rule:** `Ramdisk/` holds the chain from the last build. If you want SSHRD, copy `Ramdisk_SSH_bak` over `Ramdisk/` **immediately before** running `boot_rd.sh`. If you want a normal boot next, run `get_boot.py` **immediately before** `boot.py`. Skipping the rebuild step will boot the wrong chain.
+</Warning>
+
+## Steps
+
+<Steps>
+  <Step title="Re-enter DFU mode">
+    After the CFW restore the device is sitting in recovery mode. Hold **Side + Volume Down** for 10 seconds, then release the Side button to enter DFU mode. The screen should go black.
+  </Step>
+
+  <Step title="Re-enter PWN DFU via the Pico 2">
+    Connect the Raspberry Pi Pico 2 rig. The LED blinks twice then stays lit when the exploit succeeds. Verify with:
+
+    ```python
+    python3 -c "import usb.core; print('pwndfu' if usb.core.find(idProduct=0x1227) else 'NO DFU')"
+    ```
+
+    If it prints `NO DFU`, re-enter DFU mode and retry.
+  </Step>
+
+  <Step title="Plug the device back into the Mac">
+    Disconnect the Pico 2 rig and reconnect the device directly to the Mac.
+  </Step>
+
+  <Step title="Load the SSHRD chain into Ramdisk/">
+    ```shell
+    rm -rf Ramdisk && cp -r Ramdisk_SSH_bak Ramdisk
+    ```
+
+    Verify the SSHRD chain is active — the count must be exactly **1**:
+
+    ```shell
+    ls Ramdisk/ | grep -c RestoreRamdisk
+    # expected: 1
+    ```
+
+    A result of `0` means the normal-boot chain is loaded; repeat the `cp` command.
+  </Step>
+
+  <Step title="Send the SSHRD chain and boot">
+    ```shell
+    ./boot_rd.sh
+    ```
+
+    The script sends iBSS via `usbliter8ctl`, then iBEC, firmware blobs (ANE, AOP, AVE, SPTM, TXM, GFX, ISP, PMP, RestoreTrustCache, SIO, WCH), `RestoreRamdisk`, DeviceTree, SEP, and Kernelcache via `irecovery`. The SSHRD log will print on screen as the ramdisk boots — this confirms success.
+  </Step>
+
+  <Step title="Connect via SSH">
+    Forward port 22 from the device to localhost port 2222, then SSH in:
+
+    ```shell
+    iproxy 2222 22 &
+    ../tools/sshpass -p alpine ssh \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -p 2222 root@localhost
+    ```
+
+    The default password is `alpine`.
+  </Step>
+
+  <Step title="Mount the Preboot volume on the device">
+    Inside the SSH session, mount the Preboot partition read-only:
+
+    ```shell
+    /sbin/mount_apfs -o rdonly /dev/disk1s6 /mnt6
+    ```
+
+    Then locate the SEP firmware image:
+
+    ```shell
+    find /mnt6 -name sep-firmware.img4
+    ```
+
+    The path will look like `/mnt6/<UUID>/usr/standalone/firmware/sep-firmware.img4`.
+  </Step>
+
+  <Step title="Copy sep-firmware.img4 to the Mac">
+    From a new Mac terminal (not the SSH session), use `scp` via the forwarded port:
+
+    ```shell
+    scp -P 2222 \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      root@localhost:/mnt6/<UUID>/usr/standalone/firmware/sep-firmware.img4 \
+      dev_sep.img4
+    ```
+
+    Replace the path with the one returned by `find`.
+  </Step>
+
+  <Step title="Extract the APTicket on the Mac">
+    ```shell
+    ../tools/img4tool -e -m t8030_apticket.der dev_sep.img4
+    ```
+
+    This writes `t8030_apticket.der` into `work-27.0b2/`. Every subsequent call to `get_boot.py` or `get_rd.py` reads this file to sign all boot-chain components. **Re-run this step after every clean restore.**
+  </Step>
+</Steps>
+
+## SSHRD volume layout
+
+<Note>
+  The following APFS layout applies while booted into the SSH ramdisk. The root (`/`) is the ramdisk itself (`/dev/md0`). The APFS volumes live on the internal NVMe and must be mounted manually.
+
+  | Volume | Device | Mount point | Notes |
+  |---|---|---|---|
+  | Ramdisk root | `/dev/md0` | `/` | Read-only in-memory ramdisk |
+  | System | `/dev/disk1s1` | `/mnt1` | Mount read-write with two commands (see below) |
+  | Data | `/dev/disk1s2` | `/mnt2` | Read-write |
+  | Preboot | `/dev/disk1s6` | `/mnt6` | Mount read-only with `-o rdonly` |
+
+  To mount the System volume read-write (needed to install files):
+
+  ```shell
+  /sbin/mount_apfs /dev/disk1s1 /mnt1
+  /sbin/mount -u -o rw /dev/disk1s1
+  ```
+
+  To mount the Data volume:
+
+  ```shell
+  /sbin/mount_apfs /dev/disk1s2 /mnt2
+  /sbin/mount -u -o rw /dev/disk1s2
+  ```
+</Note>
+
+## Distinguishing SSHRD from a normal boot over SSH
+
+Both the SSHRD and a normal boot expose SSH on port 22. To tell them apart from within an SSH session:
+
+```shell
+/sbin/mount | grep -q 'md0 on /' && echo "SSHRD (ramdisk)" || echo "NORMAL boot"
+```
+
+In SSHRD, `/` is backed by `/dev/md0`. In a normal boot, `/` is backed by `disk1s1` (the System volume, read-only).
+
+## Missing tools on the ramdisk
+
+Some common utilities (`mkdir`, `mv`, `tar`, `ln`) are absent from the ramdisk image. If you need them, the Filza bundle ships a complete set at:
+
+```
+/mnt1/Applications/Filza.app/bins/bin/
+```
+
+After mounting `/mnt1` (System volume), you can call these binaries directly or add the path to your `PATH` variable.

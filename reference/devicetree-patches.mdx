@@ -1,0 +1,162 @@
+---
+title: "DeviceTree Patches: Disabling Content Protection on APFS Volumes"
+sidebarTitle: "DeviceTree Patches"
+description: "How dt_patch.py and dt_patch2.py patch the iOS 27 DeviceTree to remove content-protect from APFS volume nodes and enable ephemeral storage for the boot ramdisk."
+---
+
+The Apple DeviceTree is a binary blob in Apple's proprietary iBoot DTB format — distinct from the Linux FDT/dtb format — that iBoot constructs and passes to the XNU kernel at boot time. It describes the hardware topology and carries boot-time parameters consumed both by iBoot itself and by kernel drivers via the `IODeviceTree` plane. For the usbliter8-fun CFW, the DeviceTree must be patched before restore because iOS 27 expects an encrypted `/private/var` data volume (`/dev/disk1s2`) and an encrypted `/private/var/mobile` volume (`/dev/disk1s8`), and the CFW's inert fake SEP cannot supply the encryption keys for those volumes. Without patching, the kernel panics with "unencrypted data volume is not allowed" during the first APFS mount. An additional patch sets `ephemeral-storage` to `u32=1` so that the restore progress bar advances past 99% and the ramdisk boot completes cleanly.
+
+<Warning>
+The DeviceTree patching scripts parse and re-serialize the entire binary tree. A property removal shifts all subsequent byte offsets. Applying these patches to a different IPSW build, or re-running a patch script on an already-patched file, will silently corrupt the DeviceTree. Always start from the `.bak` copy created by `make_cfw.py`.
+</Warning>
+
+## DeviceTree binary format
+
+Apple's DeviceTree uses a simple recursive binary layout (all fields little-endian):
+
+```
+Node:
+    uint32  nProperties
+    uint32  nChildren
+    Property * nProperties
+    Node     * nChildren        # recursive
+
+Property:
+    char    name[32]            # NUL-padded to exactly 32 bytes
+    uint32  length              # bit 31 (0x80000000) = placeholder flag; bits 30–0 = value length
+    uint8   value[length]       # padded to a 4-byte boundary
+```
+
+A node's own name is stored as a property literally named `"name"`. The root node is conventionally named `"device-tree"`. All three patch scripts in usbliter8-fun implement their own parser for this format and perform a lossless round-trip verification after each edit.
+
+## Why patching is needed
+
+iOS encrypts the user data partition (`/private/var`) and the mobile home directory (`/private/var/mobile`) using per-volume keys managed by the SEP. The CFW replaces the real SEP firmware with an inert stub that does not respond to key-management requests. When APFS attempts to mount those volumes and asks the SEP for the volume keys, the SEP never responds, and the kernel panics.
+
+The fix has two parts:
+
+1. **Remove `content-protect`** from the DeviceTree's `/defaults` node. `content-protect` is a *zero-length flag property* — its mere presence tells `restored_external`'s `DataEncryptionType` accessor and the APFS driver to enable content protection. Removing it entirely tells both components to treat the volumes as unencrypted.
+
+2. **Set `ephemeral-storage` to `u32=1`** so that the restore orchestrator treats `/private/var` as an ephemeral (non-persistent) volume. Without this, the restore stalls at 99% and never signals completion to the host.
+
+## Patch scripts by beta
+
+| Script | Beta | DeviceTree patches applied |
+|--------|------|---------------------------|
+| `dt_patch2.py` | b2 | Remove `/defaults/content-protect` (zero-length flag property) |
+| `set_ephemeral.py` | b2 | Set `/chosen/ephemeral-storage` → `u32=1` (direct byte patch, not used by `make_cfw.py` directly) |
+| `patch_dt.py` | b3 | Remove `/defaults/content-protect` |
+| `patch_dt2.py` | b3 | Remove `/defaults/content-protect` + set `/defaults/no-effaceable-storage` → `u32=1` + set `/product/boot-ios-diagnostics` → `u32=1` |
+
+<Note>
+The `no-effaceable-storage` and `boot-ios-diagnostics` properties added in beta 3 are taken from the QEMU-t8030 project (`hw/arm/xnu.c`, `macho_populate_dtb` / `REM_PROPS`). They serve as additional AppleKeyStore SEP workarounds and are commented `AppleKeyStore SEP workaround` in both `patch_dt.py` and `patch_dt2.py`.
+</Note>
+
+## `dt_patch2.py` — beta 2
+
+`dt_patch2.py` (`work-27.0b2/dt_patch2.py`) removes the `content-protect` property from the `/defaults` node. The key semantic, documented in its module docstring, is:
+
+> `content-protect` is a **zero-length flag property**. Its *presence* (not any value) is what enables content protection. Removing it causes `restored_external`'s `DataEncryptionType` accessor to take the "content-protect property not found" path, leaving the volume unencrypted.
+
+Removing a zero-length property shrinks the serialized DeviceTree by exactly 36 bytes (32 bytes for the NUL-padded name field + 4 bytes for the length field).
+
+**Usage:**
+
+```shell
+python3 dt_patch2.py DeviceTree.raw -o DeviceTree_patched.raw
+# optional flags:
+python3 dt_patch2.py DeviceTree.raw --list        # show all crypto-related properties
+python3 dt_patch2.py DeviceTree.raw --dry-run     # show change without writing
+python3 dt_patch2.py DeviceTree.raw --enable      # re-add content-protect (zero-length)
+```
+
+**Patch table (beta 2):**
+
+| Node | Property | Operation | Before | After |
+|------|----------|-----------|--------|-------|
+| `/defaults` | `content-protect` | `del-prop` | present (zero-length flag) | removed |
+
+## `patch_dt.py` and `patch_dt2.py` — beta 3
+
+`work-27.0b3/patch_dt.py` applies a single patch (the same `content-protect` removal) and is used directly by `work-27.0b3/make_cfw.py`:
+
+```python
+os.system("./patch_dt.py DeviceTree.raw -o DeviceTree_patched.raw")
+```
+
+`work-27.0b3/patch_dt2.py` extends the patch table with two additional properties drawn from QEMU-t8030:
+
+**Patch table (beta 3, `patch_dt2.py`):**
+
+| Node | Property | Operation | Value | Purpose |
+|------|----------|-----------|-------|---------|
+| `/defaults` | `content-protect` | `del-prop` | — (remove) | Disable APFS content protection |
+| `/defaults` | `no-effaceable-storage` | `set-prop` | `u32=1` (`01 00 00 00`) | AppleKeyStore SEP workaround — tells the kernel not to use the effaceable storage region that requires a live SEP |
+| `/product` | `boot-ios-diagnostics` | `set-prop` | `u32=1` (`01 00 00 00`) | AppleKeyStore SEP workaround — enables the diagnostics boot path that bypasses certain SEP-dependent initialization |
+
+## `set_ephemeral.py` — beta 2
+
+`set_ephemeral.py` (`work-27.0b2/set_ephemeral.py`) is a minimal standalone script that sets the `ephemeral-storage` property in the DeviceTree to `u32=1`. Rather than parsing the full binary tree, it locates the property name by a raw byte search and overwrites the 4-byte value field in-place:
+
+```python
+#!/usr/bin/env python3
+import sys
+f = sys.argv[1]
+d = bytearray(open(f, 'rb').read())
+key = b"ephemeral-storage\x00"
+i = d.find(key)
+if i < 0: print("ephemeral-storage NOT found!"); sys.exit(1)
+lenoff = i + 32
+vlen   = int.from_bytes(d[lenoff:lenoff+4], 'little') & 0x7fffffff
+voff   = lenoff + 4
+old    = d[voff:voff+4].hex()
+d[voff:voff+4] = (1).to_bytes(4, 'little')
+open(f, 'wb').write(d)
+print(f"[+] ephemeral-storage: {old} -> 01000000 "
+      f"(name_off={hex(i)} val_off={hex(voff)} vlen={vlen})")
+```
+
+Setting `ephemeral-storage` to `1` causes the restore progress to pass the 99% stall point and allows the restore to signal completion to the host. The README lists this as a distinct patch: `DeviceTree ephemeral-storage → u32=1`.
+
+## Patching pipeline
+
+The full DeviceTree patching pipeline as executed by `make_cfw.py` (beta 2):
+
+<Steps>
+  <Step title="Back up the original im4p">
+    ```shell
+    cp CFW/Firmware/all_flash/DeviceTree.d421ap.im4p \
+       CFW/Firmware/all_flash/DeviceTree.d421ap.im4p.bak
+    ```
+    The `.bak` is the immutable source for all subsequent runs.
+  </Step>
+  <Step title="Strip the im4p wrapper to raw DeviceTree bytes">
+    ```shell
+    ../tools/img4 -i CFW/Firmware/all_flash/DeviceTree.d421ap.im4p.bak \
+                  -o DeviceTree.raw
+    ```
+  </Step>
+  <Step title="Apply the content-protect patch">
+    ```shell
+    # beta 2
+    ./dt_patch2.py DeviceTree.raw -o DeviceTree_patched.raw
+
+    # beta 3
+    ./patch_dt.py  DeviceTree.raw -o DeviceTree_patched.raw
+    ```
+    The script parses the full Apple DTB, removes the `content-protect` property from `/defaults`, re-serializes the tree, and verifies the round-trip.
+  </Step>
+  <Step title="Repack into a signed im4p">
+    ```shell
+    ../tools/img4tool -c CFW/Firmware/all_flash/DeviceTree.d421ap.im4p \
+                      -t dtre DeviceTree_patched.raw
+    ```
+    The four-character type tag `dtre` identifies this blob as a DeviceTree to iBEC.
+  </Step>
+</Steps>
+
+## Hardware model note
+
+<Note>
+`d421` is the internal Apple hardware codename for **iPhone 11 Pro** (model identifier `iPhone12,3`). The `ap` suffix in `DeviceTree.d421ap.im4p` identifies this as the Application Processor variant of the DeviceTree for that model. The `d431` variant covers iPhone 11 Pro Max (`iPhone12,5`); both are present in the same IPSW but only `d421ap` is patched here because usbliter8-fun currently targets iPhone 11 Pro only.
+</Note>

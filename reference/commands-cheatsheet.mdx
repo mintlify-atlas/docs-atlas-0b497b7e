@@ -1,0 +1,355 @@
+---
+title: "Commands Cheatsheet: Quick Reference for All Boot Modes"
+sidebarTitle: "Commands Cheatsheet"
+description: "Quick-reference shell commands for every operation: normal boot, SSHRD, SSH connection, volume mounting, bootstrap, apt, apticket dump, CFW restore, USB network, and TrollVNC."
+---
+
+This page collects every shell command you need to operate the usbliter8-fun toolkit into one scannable reference. Commands are grouped by operation so you can jump to the section you need without reading the full tutorial. For conceptual background and step-by-step instructions, see the main README.
+
+<Warning>
+  All commands are run from the **`work-27.0b2/`** directory unless explicitly noted otherwise. This is a **tethered jailbreak**: the SecureROM exploit must be applied (PWN DFU) before every single boot. Powering the device off and back on — without running the exploit rig first — will land you in normal DFU mode, not a booted jailbreak.
+</Warning>
+
+<Note>
+  The default SSH password on the jailbroken device is **`alpine`** (set by the bootstrap's dropbear configuration). Every `sshpass -p alpine` call in this cheatsheet uses that password.
+</Note>
+
+---
+
+<Tabs>
+  <Tab title="Boot Chains">
+
+    The two boot chains — **normal boot** (into live iOS) and **SSHRD** (into the SSH ramdisk for filesystem repair) — share the same `Ramdisk/` staging directory. You must rebuild that directory for whichever chain you want to use immediately before sending it to the device. Mixing up the chains is the single most common mistake.
+
+    ```shell
+    # ── Verify the device is in PWN DFU before doing anything ──────────────────
+    python3 -c "import usb.core; print('pwndfu' if usb.core.find(idProduct=0x1227) else 'NO DFU')"
+    ```
+
+    **Normal boot** (boots into live iOS 27):
+
+    ```shell
+    # 1. Rebuild the normal boot chain (kernel-patched + APTicket + ephemeral)
+    SUDO_ASKPASS=/tmp/ap.sh ./get_boot.py
+
+    # 2. Confirm no RestoreRamdisk is present (must be 0 — any other value = wrong chain)
+    ls Ramdisk/ | grep -c RestoreRamdisk
+
+    # 3. Send the chain to the device and boot
+    ./boot.py
+    ```
+
+    **SSHRD** (boots into the SSH ramdisk for mounting and patching the filesystem):
+
+    ```shell
+    # 1. Wipe the current Ramdisk/ and restore the saved SSHRD chain
+    rm -rf Ramdisk && cp -r Ramdisk_SSH_bak Ramdisk
+
+    # 2. Confirm RestoreRamdisk is present (must be 1)
+    ls Ramdisk/ | grep -c RestoreRamdisk
+
+    # 3. Boot into the SSH ramdisk
+    ./boot_rd.sh
+    ```
+
+    <Tip>
+      If you boot into SSHRD when you wanted normal (or vice versa), the fix is always the same: re-enter DFU → re-apply the PWN exploit → rebuild the correct chain → re-send. Never skip the rebuild step.
+    </Tip>
+
+    **One-time askpass helper** (creates `/tmp/ap.sh` so `sudo` prompts appear as a macOS dialog instead of a terminal echo):
+
+    ```shell
+    cat > /tmp/ap.sh <<'EOF'
+    #!/bin/sh
+    /usr/bin/osascript \
+      -e 'display dialog "sudo password:" default answer "" with hidden answer' \
+      -e 'text returned of result'
+    EOF
+    chmod +x /tmp/ap.sh
+    ```
+
+  </Tab>
+
+  <Tab title="SSH & Device Access">
+
+    Two transport paths are available: **iproxy** (usbmux, port forwarding over the Lightning cable) and **USB ethernet** (direct IP `10.7.0.2`, requires `net_up.sh` to be run first). iproxy is available immediately after boot; USB ethernet requires the network setup step but is more stable for long-running sessions.
+
+    **Via iproxy (usbmux) — available right after boot:**
+
+    ```shell
+    # Kill any stale iproxy, start a fresh one on port 2222
+    pkill -f "iproxy 2222"; iproxy 2222 22 &
+
+    # Connect
+    ../tools/sshpass -p alpine ssh \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o PreferredAuthentications=password \
+      -o PubkeyAuthentication=no \
+      -p 2222 root@localhost
+    ```
+
+    **Via USB ethernet — after running `net_up.sh`:**
+
+    ```shell
+    ../tools/sshpass -p alpine ssh \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      root@10.7.0.2
+    ```
+
+    **Determine which boot mode you are in** (run from the SSH session):
+
+    ```shell
+    /sbin/mount | grep -q 'md0 on /' \
+      && echo "SSHRD (ramdisk)" \
+      || echo "NORMAL boot"
+    # SSHRD:  / = /dev/md0 (ro)   System=/mnt1  Data=/mnt2  Preboot=disk1s6
+    # NORMAL: / = disk1s1 (System, RO at boot)  /var = Data (rw)
+    ```
+
+    <Note>
+      The usbmux (iproxy) tunnel can reset at SSH key exchange while the dropbear daemon on the device stays alive. If your SSH session drops and reconnects fail, switch to the USB ethernet path (`root@10.7.0.2`) which avoids the usbmux layer entirely.
+    </Note>
+
+  </Tab>
+
+  <Tab title="Volume Mounting">
+
+    Volume mounting is only available from **SSHRD** mode. In normal boot, the System volume is mounted read-only by the kernel and the Data volume is mounted read-write at `/var` automatically.
+
+    **System volume (disk1s1) — read-write:**
+
+    ```shell
+    /sbin/mount_apfs /dev/disk1s1 /mnt1
+    /sbin/mount -u -o rw /dev/disk1s1
+    ```
+
+    **Data volume (disk1s2) — read-write:**
+
+    ```shell
+    /sbin/mount_apfs /dev/disk1s2 /mnt2
+    /sbin/mount -u -o rw /dev/disk1s2
+    ```
+
+    **Preboot volume (disk1s6) — read-only, for APTicket dump:**
+
+    ```shell
+    /sbin/mount_apfs -o rdonly /dev/disk1s6 /mnt6
+    find /mnt6 -name sep-firmware.img4
+    # scp or cat the result back to the Mac, then:
+    #   ../tools/img4tool -e -m t8030_apticket.der dev_sep.img4
+    ```
+
+    <Warning>
+      Some standard UNIX tools (`mkdir`, `mv`, `tar`, `ln`) are missing from the ramdisk. If you need them during a SSHRD session, use the bundled copies from Filza: `/mnt1/Applications/Filza.app/bins/bin/{mkdir,mv,cp,rm,ln,tar}`.
+    </Warning>
+
+    **Copy staged apps to `/Applications/`** (fixes the "only 3 apps on screen" problem):
+
+    ```shell
+    for a in /mnt2/staged_system_apps/*.app; do
+      b=${a##*/}
+      [ -e /mnt1/Applications/$b ] || cp -R "$a" /mnt1/Applications/
+    done
+    ```
+
+  </Tab>
+
+  <Tab title="Apps & Bootstrap">
+
+    Bootstrap and app management commands run on the **device** over SSH during or after the first normal boot.
+
+    **Set PATH for rootless jailbreak:**
+
+    ```shell
+    export PATH=/var/jb/usr/bin:/var/jb/bin:/var/jb/usr/sbin:/var/jb/sbin:/usr/bin:/bin:/usr/sbin:/sbin
+    ```
+
+    **Bootstrap** (run once, after extracting `/var/jb` from `bootstrap_1900.tar.zst`):
+
+    ```shell
+    /var/jb/prep_bootstrap.sh
+    /var/jb/usr/bin/dpkg -i /var/jb/sileo.deb
+    ```
+
+    **Respring** (restart SpringBoard without a full reboot):
+
+    ```shell
+    /bin/ps ax | while read pid rest; do
+      case "$rest" in
+        *CoreServices/SpringBoard.app/SpringBoard)
+          /bin/kill -9 "$pid";;
+      esac
+    done
+    ```
+
+    **Register apps with TrollStoreLite** (after dropping a `.app` bundle into `/Applications/` via SSHRD):
+
+    ```shell
+    cd /Applications/TrollStoreLite.app && ./trollstorehelper refresh-all
+    ```
+
+    **apt package management:**
+
+    ```shell
+    apt-get update
+    apt-get install -y <package>
+    ```
+
+    <Note>
+      Shell-script packages (`#!/usr/bin/env ...` shebangs) cannot be executed directly — the kernel blocks shebang execution, and `/usr/bin/env` is absent from the rootless layout. Either run them with `bash &lt;script&gt;` or wrap them in a compiled binary using the pattern in `net/shwrap.c` (as done for `neofetch`).
+    </Note>
+
+    <Warning>
+      If `apt-get update` errors with "connect 127.0.0.1:8888", a stale proxy config from an earlier session is present. Fix it by running: `rm /var/jb/etc/apt/apt.conf.d/00proxy.conf`, then restart Sileo and pull to refresh.
+    </Warning>
+
+  </Tab>
+
+  <Tab title="Restore & Signing">
+
+    **Build and flash a custom firmware (CFW):**
+
+    ```shell
+    # Build the CFW (requires sudo; uses the askpass helper)
+    SUDO_ASKPASS=/tmp/ap.sh ./make_cfw.py
+
+    # Start the local TSS proxy (allows signing beta IPSW without Apple's servers)
+    python3 tss_proxy_server.py &
+
+    # Flash via idevicerestore
+    ./restore_cfw.sh
+    ```
+
+    <Note>
+      If the restore panics with "enter restore mode", perform a cold reset of the device and try again. The device must return to recovery mode for `restore_cfw.sh` to detect it correctly.
+    </Note>
+
+    **Dump APTicket** (run from SSHRD — **mandatory after every clean restore**):
+
+    ```shell
+    # Mount Preboot (read-only)
+    /sbin/mount_apfs -o rdonly /dev/disk1s6 /mnt6
+
+    # Find the SEP firmware image
+    find /mnt6 -name sep-firmware.img4
+
+    # scp the file back to the Mac and name it dev_sep.img4, then:
+    ../tools/img4tool -e -m t8030_apticket.der dev_sep.img4
+    ```
+
+    **Apply userland byte patches** (for activation / SEP stability):
+
+    ```shell
+    ./patches/userland_patches.py mobileactivationd mobileactivationd
+    ./patches/userland_patches.py coreauthd coreauthd
+    ./patches/userland_patches.py ctkd ctkd
+    ```
+
+    **Re-sign a patched binary** (preserve original entitlements, drop `get-task-allow`):
+
+    ```shell
+    # Keep an unmodified backup
+    cp binary binary.orig
+
+    # Extract entitlements from the original
+    ldid -e binary.orig > ents.plist
+
+    # Edit ents.plist: remove the get-task-allow key if present, then:
+    ldid -S ents.plist -Cadhoc binary
+    ```
+
+    <Warning>
+      Leaving `get-task-allow` in the entitlements plist causes AMFI to kill the process on launch (black screen / instant crash). Always inspect `ents.plist` and remove that key before re-signing.
+    </Warning>
+
+    **Fix ScreenTime deadlock** (Setup hangs on the loading spinner on first boot):
+
+    ```shell
+    scp root@10.7.0.2:/var/db/com.apple.xpc.launchd/disabled.plist .
+    ./patches/disable_screentime.py disabled.plist
+    scp disabled.plist root@10.7.0.2:/var/db/com.apple.xpc.launchd/disabled.plist
+    ```
+
+  </Tab>
+
+  <Tab title="Network & VNC">
+
+    Wi-Fi, baseband, and Bluetooth are non-functional in this CFW. All internet access goes through **USB reverse tethering** — the Mac NATs its internet connection to the device over the USB-ethernet interface at `10.7.0.2`.
+
+    **Set up USB internet sharing** (run on the Mac after every normal boot):
+
+    ```shell
+    # Auto-detects the USB-ethernet interface, sets static IPs, enables NAT
+    cd work-27.0b2 && ./net_up.sh
+    # Prints HTTP 200 at the end if internet is working on the device
+    ```
+
+    What `net_up.sh` does automatically:
+    - Sets `en31` (or whichever interface the device enumerates as) to `10.7.0.1`
+    - Enables `net.inet.ip.forwarding=1`
+    - Loads a `pf` NAT rule: `10.7.0.0/24 → en0` (Mac's WAN interface)
+    - SSHes into the device and runs: `ifconfig en2 10.7.0.2`, sets the default route, and calls `/var/jb/netup` (which registers the interface with SCDynamicStore as the primary service with DNS `8.8.8.8` / `1.1.1.1`)
+
+    **Manual network setup** (Mac side, if `net_up.sh` is unavailable):
+
+    ```shell
+    SUDO_ASKPASS=/tmp/ap.sh sudo -A ifconfig en31 inet 10.7.0.1 netmask 255.255.255.0
+    SUDO_ASKPASS=/tmp/ap.sh sudo -A sysctl -w net.inet.ip.forwarding=1
+    printf 'nat on en0 from 10.7.0.0/24 to any -> (en0)\npass all\n' > /tmp/usbnat.pf
+    SUDO_ASKPASS=/tmp/ap.sh sudo -A pfctl -ef /tmp/usbnat.pf
+    # Replace en0 with the actual WAN interface: route -n get default | awk '/interface:/{print $2}'
+    ```
+
+    **Manual network setup** (device side, over SSH):
+
+    ```shell
+    /sbin/ifconfig en2 inet 10.7.0.2 netmask 255.255.255.0
+    /sbin/route -n delete default 2>/dev/null
+    /sbin/route -n add default 10.7.0.1
+    /var/jb/netup
+    ```
+
+    <Warning>
+      Do **not** use the auto-assigned `169.254.x.x` link-local addresses. They are randomised on every boot, breaking `netup` and the static routes. Always force the static `10.7.0.x` addresses as shown above.
+    </Warning>
+
+    **TrollVNC — full one-command setup** (network + VNC server + Screen Sharing viewer):
+
+    ```shell
+    # Run on the Mac after every normal boot
+    cd work-27.0b2 && ./vnc_up.sh
+    # Opens macOS Screen Sharing at vnc://10.7.0.2:5901  (password: alpine)
+    # Mouse click = tap; click-drag = swipe; right-click / two-finger = Home
+    ```
+
+    **Start TrollVNC manually** (if the network is already up):
+
+    ```shell
+    ../tools/sshpass -p alpine ssh \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      root@10.7.0.2 /var/jb/usr/bin/tvncd
+
+    open "vnc://:alpine@10.7.0.2:5901"
+    ```
+
+    <Note>
+      TrollVNC **must** be launched via `tvncd`, not by calling `trollvncserver` directly. `tvncd` uses `posix_spawn` with an **App process type** and `SETSID`, which is required to obtain display access (`IOSurface`). A plain daemon process gets `IOSurface 0x0` and fails with "Failed to get screen dimensions". The `SETSID` flag also keeps the server alive after you close the SSH session.
+    </Note>
+
+    **Fix stale apt proxy after getting internet working:**
+
+    ```shell
+    rm /var/jb/etc/apt/apt.conf.d/00proxy.conf
+    ```
+
+    **Check TrollVNC server log on the device:**
+
+    ```shell
+    tail -f /tmp/tvnc.log
+    ```
+
+  </Tab>
+</Tabs>

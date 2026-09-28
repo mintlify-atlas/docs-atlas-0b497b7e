@@ -1,0 +1,103 @@
+---
+title: "disable_screentime.py: Fix the Setup ScreenTime Launchd Deadlock"
+sidebarTitle: "disable_screentime.py"
+description: "Adds ScreenTime and FamilyControls launchd labels to disabled.plist so Setup's XPC call fails fast instead of hanging for 10 seconds and killing the process."
+---
+
+After offline hacktivation the device lands in Setup (com.apple.purplebuddy) and remains stuck on the loading spinner indefinitely. The crash log (`Setup-*.ips`) reveals a scene-update watchdog transgression: Setup exhausts its 10-second budget waiting for an XPC reply from `com.apple.ScreenTimeAgent`. The agent accepts the connection but never replies — the watchdog fires, Setup is killed, and the device loops back to Setup on the next boot.
+
+`disable_screentime.py` fixes this by inserting five launchd service labels into the `disabled.plist` overrides file. When those labels are present and set to `True`, launchd refuses to launch the agents at all, so Setup's XPC `xpc_connection_send_message_with_reply` call returns an immediate error instead of hanging. Setup then walks forward to the Home screen normally.
+
+## Location
+
+```
+patches/disable_screentime.py
+```
+
+## Why Renaming the LaunchDaemon Plist Does Not Work
+
+`ScreenTimeAgent` is registered as an **on-demand** job (it has `MachServices` with a `.setup` key). Launchd caches on-demand job registrations at boot time; the on-disk plist file is not consulted again after that point. Renaming or deleting the plist file has no effect on a running system — launchd will still launch the agent from its in-memory cache the moment Setup requests the MachService. The only reliable way to prevent the launch is to add the label to the `disabled.plist` overrides dictionary, which launchd does check at launch time.
+
+## Usage
+
+```shell
+# Patch the plist in place
+./patches/disable_screentime.py <disabled.plist>
+
+# Show current state without modifying the file
+./patches/disable_screentime.py --show <disabled.plist>
+```
+
+## Full Workflow
+
+<Steps>
+  <Step title="Pull the plist from the device">
+    If the device is booted normally and reachable over USB tethering (see [`net_up.sh`](/reference/net-up)):
+
+    ```shell
+    scp root@10.7.0.2:/var/db/com.apple.xpc.launchd/disabled.plist .
+    ```
+
+    If you are in SSHRD mode, the Data volume is mounted at `/mnt2`. The equivalent path is:
+
+    ```shell
+    # From SSHRD
+    scp -P 2222 root@localhost:/mnt2/db/com.apple.xpc.launchd/disabled.plist .
+    ```
+  </Step>
+  <Step title="Apply the patch">
+    ```shell
+    ./patches/disable_screentime.py disabled.plist
+    ```
+
+    The script prints each label and its transition (`<absent> -> True` or the old value if it was already present), then reports the total number of labels set and the total entry count in the plist.
+  </Step>
+  <Step title="Push the plist back to the device">
+    ```shell
+    scp disabled.plist root@10.7.0.2:/var/db/com.apple.xpc.launchd/disabled.plist
+    ```
+
+    From SSHRD:
+
+    ```shell
+    scp -P 2222 disabled.plist root@localhost:/mnt2/db/com.apple.xpc.launchd/disabled.plist
+    ```
+  </Step>
+  <Step title="Reboot the device">
+    The change takes effect on the next boot. Reboot normally; Setup should now complete and land on the Home screen.
+  </Step>
+</Steps>
+
+## Labels Disabled
+
+The following five labels are set to `True` in `disabled.plist`:
+
+| Label | Role |
+|-------|------|
+| `com.apple.ScreenTimeAgent` | The service Setup actually blocks on — its XPC never replies |
+| `com.apple.ScreenTimeSettingsAgent` | ScreenTime settings companion agent |
+| `com.apple.FamilyControlsAgent` | Family Controls policy agent |
+| `com.apple.familycircled` | Family circle daemon |
+| `com.apple.familynotificationd` | Family notifications daemon |
+
+## Output Format
+
+The script always writes a **binary plist** (`plistlib.FMT_BINARY`). Launchd's `disabled.plist` reader does not accept an XML plist at this path; writing XML would silently fail and the labels would have no effect.
+
+## Missing Plist
+
+If the plist does not exist on the device (this can happen on a freshly restored device where no services have ever been disabled), the script creates a new empty dictionary, inserts all five labels, and writes the binary plist from scratch. Launchd is fine with a newly created file at this path.
+
+## Checking the Current State
+
+To inspect the current values of the five labels without making any changes:
+
+```shell
+./patches/disable_screentime.py --show disabled.plist
+```
+
+This prints each label alongside its current value (`True`, `False`, or `<absent>`).
+
+<Note>
+  The script is idempotent. Re-running it on an already-patched plist is safe — labels that are already set to `True` are reported as unchanged and the file is rewritten with the same content. The verification step re-reads the written file and exits with code 1 if any label is not `True`.
+</Note>

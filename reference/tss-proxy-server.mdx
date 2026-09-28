@@ -1,0 +1,79 @@
+---
+title: "tss_proxy_server.py: Local TSS Proxy for Beta Firmware Signing"
+sidebarTitle: "tss_proxy_server.py"
+description: "Runs a local HTTP server on port 1337 that proxies Apple TSS ticket requests, injecting eUICC keys when needed to obtain a valid APTicket for iOS 27 beta."
+---
+
+Apple's Tatsu Signing Server (TSS) returns `STATUS=168` for iOS 27 beta IPSW signing requests because the beta requires eUICC parameters that `idevicerestore` does not supply by default. `tss_proxy_server.py` sits between `idevicerestore` and `gs.apple.com`, transparently forwarding most requests but intercepting the `STATUS=168` response to inject the required eUICC keys and retry — returning a valid APTicket to the client.
+
+## Location
+
+```
+work-27.0b2/tss_proxy_server.py
+```
+
+## Usage
+
+Start the proxy in a separate terminal before running `restore_cfw.sh`:
+
+```shell
+# Terminal 1 — start the proxy
+python3 tss_proxy_server.py
+# Server running on http://127.0.0.1:1337 ...
+
+# Terminal 2 — restore
+./restore_cfw.sh
+```
+
+`restore_cfw.sh` configures `idevicerestore` to use `http://127.0.0.1:1337` as its TSS endpoint. The proxy handles all signing requests automatically; no manual intervention is required during the restore.
+
+## How It Works
+
+<Steps>
+  <Step title="Accept the signing request">
+    The server listens on `127.0.0.1:1337` and accepts `POST` requests (and `GET` requests, which are forwarded identically) to the path `/TSS/controller?action=2`. Any other path returns HTTP 404. The full request body is read from `idevicerestore` and logged to stdout.
+  </Step>
+  <Step title="Forward to Apple TSS">
+    The original request body is forwarded as-is to `https://gs.apple.com/TSS/controller?action=2` using `urllib.request` with a 30-second timeout. The `Content-Type`, `User-Agent`, and `Cache-Control` headers are set appropriately for a TSS request.
+  </Step>
+  <Step title="Check the status code">
+    The TSS response body uses the format `STATUS=NNN&MESSAGE=...`. The proxy extracts the `STATUS` value by splitting on `&` and reading the first field. If `STATUS` is `168`, the proxy proceeds to inject eUICC keys.
+  </Step>
+  <Step title="Inject eUICC keys and retry (STATUS=168 only)">
+    The proxy modifies the original request plist by inserting four eUICC key-value pairs just before the root `</dict>` closing tag (the last `</dict>` in the document). A double-injection guard checks whether `eUICC,ChipID` is already present before modifying the body, preventing duplicate keys if the request is somehow retried. The modified request is then forwarded to Apple TSS a second time.
+  </Step>
+  <Step title="Return the final response">
+    The final TSS response — either the first response if its `STATUS` was not `168`, or the response to the eUICC-injected retry — is returned to `idevicerestore` with HTTP 200. On any forwarding exception, the proxy returns HTTP 502 with the error message as the body.
+  </Step>
+</Steps>
+
+## eUICC Keys Injected
+
+These four keys are inserted into the root plist dictionary of the TSS request when `STATUS=168` is received:
+
+| Key | Type | Value |
+|-----|------|-------|
+| `eUICC,ApProductionMode` | Boolean | `true` |
+| `eUICC,ChipID` | Integer | `5` |
+| `eUICC,EID` | Data (base64) | `iQSQMgBQCIgmAASEJAh2MQ==` |
+| `eUICC,RootKeyIdentifier` | Data (base64) | `QVhK/T5EfBDbGEdwMfU42u7Qx9M=` |
+
+## Endpoint Routing
+
+| Path | Method | Behaviour |
+|------|--------|-----------|
+| `/TSS/controller?action=2` | `POST` | Forward → optional eUICC inject → return response |
+| `/TSS/controller?action=2` | `GET` | Same as POST |
+| Any other path | Any | HTTP 404 |
+
+## Error Handling
+
+| Condition | HTTP Response |
+|-----------|--------------|
+| Successful TSS round-trip | `200` with TSS response body |
+| Exception during `urllib` forward | `502` with exception text as body |
+| Unrecognised path | `404` (empty body) |
+
+<Note>
+  `idevicerestore` must be configured to target `http://127.0.0.1:1337` as its TSS server. `restore_cfw.sh` handles this automatically — you do not need to pass any extra flags to `idevicerestore` yourself.
+</Note>

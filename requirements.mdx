@@ -1,0 +1,149 @@
+---
+title: "Requirements: Tools, Packages, and IPSW for iOS 27 CFW"
+sidebarTitle: "Requirements"
+description: "Install Python dependencies, download the iOS 27 beta IPSW, and set up the required command-line tools before building the custom firmware."
+---
+
+Before running any part of the usbliter8-fun toolchain you need a correctly configured Mac, the right Python version and packages, the iOS 27 IPSW for iPhone 11 Pro, and a set of command-line tools. Several of those tools ship pre-built inside the repository's `tools/` directory; others — such as `irecovery`, `idevicerestore`, `iproxy`, and `ldid` — must be present on your `PATH`. This page walks through every prerequisite in order.
+
+<Warning>
+  **Offsets are build-specific.** All byte-patch offsets embedded in the Python scripts (`make_cfw.py`, `userland_patches.py`, etc.) have been verified against **iOS 27.0 beta 2, build `24A5370h`, device model `iPhone12,3`**. If you want to target any other build or device you must locate the equivalent offsets yourself using IDA Pro or a comparable disassembler. Applying wrong offsets will produce a non-bootable device.
+</Warning>
+
+## Host and Target
+
+| Item | Requirement |
+|---|---|
+| Host OS | macOS (Apple Silicon; `tools/` contains `arm64` binaries such as `ldid_macosx_arm64`) |
+| Target device | iPhone 11 Pro — model identifier `iPhone12,3`, internal codename `d421` |
+| Target SoC | Apple A13 Bionic (`T8030`) |
+| Firmware (beta 2) | iOS 27.0 beta 2, build `24A5370h` — working directory `work-27.0b2/` |
+| Firmware (beta 3) | iOS 27.0 beta 3, build `24A5380h` — working directory `work-27.0b3/` |
+
+<Steps>
+
+### Install Python 3.14
+
+The primary scripts (`make_cfw.py`, `get_fw.py`, `get_rd.py`, `get_boot.py`, `tss_proxy_server.py`) use the shebang `#!/usr/bin/env python3.14`. Python 3.14 must be available on your `PATH` as `python3.14`. Install it via [python.org](https://www.python.org/downloads/) or a version manager such as `pyenv`:
+
+```shell
+pyenv install 3.14
+pyenv global 3.14
+```
+
+Verify the interpreter is reachable:
+
+```shell
+python3.14 --version
+```
+
+### Install Python packages
+
+Install the three required Python packages. These cover IPSW/IMG4 manipulation and USB device communication:
+
+```shell
+pip3 install requests pyimg4 pymobiledevice3
+```
+
+| Package | Purpose |
+|---|---|
+| `requests` | Downloading firmware images and TSS responses |
+| `pyimg4` | Parsing and exporting kernelcache / IMG4 containers |
+| `pymobiledevice3` | usbmux port forwarding and device communication |
+
+### Download the iOS 27.0 beta 2 IPSW
+
+The IPSW file is large (~7 GB). Download it directly from Apple's CDN:
+
+```shell
+curl -L -o iPhone12,3_27.0_24A5370h_Restore.ipsw \
+  "https://updates.cdn-apple.com/2026SpringSeed/fullrestores/140-20242/CD53E584-98E6-4560-B847-D8D5027223E8/iPhone12,3,iPhone12,5_27.0_24A5370h_Restore.ipsw"
+```
+
+Alternatively, `get_fw.py` inside `work-27.0b2/` will download and unzip it automatically when you run the CFW build step.
+
+For **beta 3** (`24A5380h`), `get_fw.py` inside `work-27.0b3/` downloads from:
+
+```
+https://updates.cdn-apple.com/2026SpringSeed/fullrestores/140-35958/9EC7A77B-DC21-4DD3-B285-8CA45DEF7689/iPhone12,3,iPhone12,5_27.0_24A5380h_Restore.ipsw
+```
+
+### Verify the bundled tools in `tools/`
+
+The following binaries ship pre-built in the repository's `tools/` directory (arm64 macOS). Confirm they are all present and executable:
+
+```shell
+ls tools/
+# expected: img4  img4tool  ldid_macosx_arm64  usbliter8ctl  sshpass
+# also present: bspatch  gtar  kerneldiff  optool  trustcache_macos_arm64
+chmod +x tools/*
+```
+
+| Tool | Purpose |
+|---|---|
+| `img4` / `img4tool` | Pack and unpack Apple IMG4 firmware images; sign with APTicket |
+| `ldid_macosx_arm64` | Ad-hoc code signing; extract and re-inject entitlement plists |
+| `usbliter8ctl` | Send the usbliter8 exploit payload to the device over USB |
+| `sshpass` | Non-interactive SSH login (supplies the `alpine` password) |
+
+### Verify externally-required CLI tools
+
+The following tools are **not** bundled and must be installed separately and available on your `PATH`:
+
+| Tool | Purpose | Install hint |
+|---|---|---|
+| `irecovery` | Send individual firmware images in DFU / Recovery mode | Build from [libimobiledevice/irecovery](https://github.com/libimobiledevice/irecovery) |
+| `idevicerestore` | Full firmware restore over USB | Build from [libimobiledevice/idevicerestore](https://github.com/libimobiledevice/idevicerestore) |
+| `iproxy` | Forward a usbmux port to a local TCP port (SSH tunnelling) | Part of `libimobiledevice`; `brew install libimobiledevice` |
+| `ldid` | Code signing (used by patching scripts alongside the bundled arm64 variant) | `brew install ldid` or build from source |
+
+Verify each one is on your path:
+
+```shell
+which irecovery idevicerestore iproxy ldid
+```
+
+### Set up the sudo askpass helper
+
+Several scripts call `sudo` internally (to modify network interfaces, run `pfctl`, etc.). To avoid entering your password into a terminal that may be scripted, configure a macOS dialog-based askpass helper. Run this **once** before starting the process:
+
+```shell
+cat > /tmp/ap.sh <<'EOF'
+#!/bin/sh
+/usr/bin/osascript -e 'display dialog "sudo password:" default answer "" with hidden answer' -e 'text returned of result'
+EOF
+chmod +x /tmp/ap.sh
+```
+
+When invoking scripts that need `sudo`, prefix them with `SUDO_ASKPASS=/tmp/ap.sh`:
+
+```shell
+SUDO_ASKPASS=/tmp/ap.sh ./make_cfw.py
+```
+
+This approach keeps your password out of shell history and out of the repository.
+
+### Confirm your working directory
+
+All commands in the jailbreak process are run from inside the `work-27.0b2/` folder (or `work-27.0b3/` for beta 3). Change into it before proceeding:
+
+```shell
+cd work-27.0b2/
+```
+
+Relative paths used by the scripts (e.g. `../tools/sshpass`, `Ramdisk/`, `CFW/`) are resolved from this directory. Running scripts from the repository root or any other location will break path resolution.
+
+</Steps>
+
+## Summary Checklist
+
+Before moving on to the CFW flash step, confirm every item below:
+
+- [ ] `python3.14 --version` prints `3.14.x`
+- [ ] `python3.14 -c "import requests, pyimg4, pymobiledevice3"` exits without error
+- [ ] iOS 27.0 IPSW is downloaded (or will be fetched by `get_fw.py`)
+- [ ] All `tools/*` binaries are executable (`chmod +x tools/*`)
+- [ ] `irecovery`, `idevicerestore`, `iproxy`, and `ldid` are on `PATH`
+- [ ] `/tmp/ap.sh` exists and is executable
+- [ ] You are working from inside `work-27.0b2/` (or `work-27.0b3/`)
+- [ ] The target device is an iPhone 11 Pro (`iPhone12,3`) — no other model is supported

@@ -1,0 +1,163 @@
+---
+title: "make_cfw.py: Build the iOS 27 Custom Firmware"
+sidebarTitle: "make_cfw.py"
+description: "make_cfw.py patches iBSS, iBEC, DeviceTree, RestoreRamdisk, TXM, and the kernelcache to produce a bootable custom firmware for iPhone 11 Pro."
+---
+
+`make_cfw.py` is the main CFW builder for the usbliter8-fun iOS 27 jailbreak. It takes the extracted IPSW for iPhone 11 Pro (d421 / A13), applies targeted binary patches to each firmware component in-place, and emits a `CFW/` directory ready for idevicerestore as well as a `Ramdisk/iBSS.raw` for the tethered boot chain.
+
+## Usage
+
+<Steps>
+  <Step title="Set up the askpass helper">
+    The script invokes `sudo` for `hdiutil` to mount the restore ramdisk. If `/tmp/ap.sh` does not yet exist, create it so that `SUDO_ASKPASS` can prompt without blocking:
+
+    ```shell
+    cat > /tmp/ap.sh <<'EOF'
+    #!/bin/sh
+    /usr/bin/osascript -e 'display dialog "sudo password:" default answer "" with hidden answer with title "net_up.sh"' -e 'text returned of result'
+    EOF
+    chmod +x /tmp/ap.sh
+    ```
+  </Step>
+  <Step title="Run the builder">
+    ```shell
+    cd work-27.0b2
+    SUDO_ASKPASS=/tmp/ap.sh ./make_cfw.py
+    ```
+
+    For beta 3, switch to `work-27.0b3/` — the script is identical in structure but uses the `24A5380h` build offsets (see [beta 2 vs beta 3 offset tables](#beta-2-vs-beta-3-offset-differences) below).
+  </Step>
+</Steps>
+
+## Inputs and Outputs
+
+<ParamField body="Input (beta 2)" type="directory">
+  `iPhone12,3,iPhone12,5_27.0_24A5370h_Restore/` — the extracted IPSW for iOS 27.0 beta 2. Must be present in the working directory before the script runs.
+</ParamField>
+
+<ParamField body="Input (beta 3)" type="directory">
+  `iPhone12,3,iPhone12,5_27.0_24A5380h_Restore/` — the extracted IPSW for iOS 27.0 beta 3, used by `work-27.0b3/make_cfw.py`.
+</ParamField>
+
+<ParamField body="Output: CFW/" type="directory">
+  A deep copy of the extracted IPSW with every patched image written back in-place. Pass this directory to `restore_cfw.sh` / `idevicerestore`.
+</ParamField>
+
+<ParamField body="Output: Ramdisk/iBSS.raw" type="file">
+  The raw (decompressed, un-wrapped) patched iBSS image used by `boot.py` and `boot_rd.sh` to send the first-stage bootloader over USB.
+</ParamField>
+
+<Note>
+  Before patching, the script creates a `.bak` copy of each original image — for example `iBSS.d421.RELEASE.im4p.bak`, `CFW/kernelcache.release.iphone12.bak`, etc. If a `.bak` already exists the copy step is skipped, so re-running the script is safe.
+</Note>
+
+---
+
+## Component Patches
+
+### iBSS (`Ramdisk/iBSS.raw`)
+
+The script extracts the raw payload from `CFW/Firmware/dfu/iBSS.d421.RELEASE.im4p` using `img4`, then patches the raw binary directly. The patched raw file is **not** repacked into an im4p — it is sent as-is over USB by the boot chain.
+
+| Offset | Value | Instruction | Purpose |
+|--------|-------|-------------|---------|
+| `0x23DB0` | `d503201f` | NOP | First instruction of `image4_validate_property_callback` — disable IMG4 manifest validation |
+| `0x23DB4` | `d2800000` | `mov x0, #0` | Force the callback to always return 0 (success) |
+| `0x2AFBC` | `B0000542` | `adrp x2, #0xa9000` | Replace boot-args pointer — point x2 to the page holding the patched args string |
+| `0x2AFC0` | `91214042` | `add x2, x2, #0x850` | Add page offset to land exactly on the boot-args string |
+| `0xD3850` | `-v wdt=-1 rd=md0 -restore\0` | (string) | The actual boot-args written at this file offset: verbose, watchdog disabled, ramdisk root |
+
+### iBEC (`CFW/Firmware/dfu/iBEC.d421.RELEASE.im4p`)
+
+iBEC receives the same `image4_validate_property_callback` NOP + `mov x0, #0` pair and the same boot-args pointer patch as iBSS. It also carries one extra patch to preserve the nonce across restarts:
+
+| Offset | Value | Instruction | Purpose |
+|--------|-------|-------------|---------|
+| `0x36bd0` | `1400000a` | `b #0x28` | Keep nonce — branch over the code that would clear it |
+| `0x23DB0` | `d503201f` | NOP | `image4_validate_property_callback` — same as iBSS |
+| `0x23DB4` | `d2800000` | `mov x0, #0` | Always return 0 — same as iBSS |
+| `0x2AFBC` | `B0000542` | `adrp x2, #0xa9000` | Boot-args pointer — same as iBSS |
+| `0x2AFC0` | `91214042` | `add x2, x2, #0x850` | Boot-args offset — same as iBSS |
+| `0xD3850` | `-v wdt=-1 rd=md0 -restore\0` | (string) | Boot-args string |
+
+After patching, the raw binary is repacked with `img4tool -c ... -t ibec`.
+
+### DeviceTree (`CFW/Firmware/all_flash/DeviceTree.d421ap.im4p`)
+
+The raw DeviceTree is extracted with `img4` and then piped through `dt_patch2.py`, which walks all APFS volume nodes and disables the `content-protect` property. This prevents data-at-rest encryption on `/private/var` (`disk1s2`) and `/private/var/mobile` (`disk1s8`), which would otherwise cause mount failures when the SEP is absent. The patched DeviceTree is repacked with `img4tool -c ... -t dtre`.
+
+### RestoreRamdisk (`CFW/094-13753-132.dmg`)
+
+The restore ramdisk DMG is extracted from its im4p wrapper with `pyimg4`, then mounted via:
+
+```shell
+sudo -A hdiutil attach -mountpoint CFW_RD ramdisk.dmg -owners off
+```
+
+Two binaries inside the mounted ramdisk are patched in place and then re-signed ad-hoc with `ldid_macosx_arm64 -S -M -Cadhoc`.
+
+**`/usr/local/bin/restored_external`**
+
+| Offset | Value | Instruction | Purpose |
+|--------|-------|-------------|---------|
+| `0x7e53c` | `d2800000` | `mov x0, #0` | Force FDR step to always succeed (xref: `RestoredFDRRecover`) |
+| `0x49e38` | `d2800000` | `mov x0, #0` | Stub out `_ramrod_device_has_baseband` |
+| `0x49e3c` | `D65F03C0` | `ret` | Return immediately |
+| `0x49DC0` | `d2800000` | `mov x0, #0` | Stub out `ramrod_device_has_baseband_legacy` |
+| `0x49DC4` | `D65F03C0` | `ret` | Return immediately |
+
+**`/usr/sbin/asr`**
+
+| Offset | Value | Instruction | Purpose |
+|--------|-------|-------------|---------|
+| `0x24d34` | `d503201f` | NOP | Bypass the branch that triggers "Image failed signature verification" |
+
+After patching, the ramdisk is detached and repacked with `pyimg4 im4p create -f rdsk`.
+
+### TXM (`CFW/Firmware/txm.iphoneos.release.im4p`)
+
+TXM (Trust Cache Manager) is responsible for enforcing code-signature policies. Three `memcmp` calls in the query-module functions are clobbered to return 0, allowing unsigned or unregistered binaries to run. Two additional instructions in `_validateConstraintsSignatureType` are NOPed to suppress a secondary signature-type check.
+
+| Offset | Value | Instruction | Purpose |
+|--------|-------|-------------|---------|
+| `0x39fac` | `d2800000` | `mov x0, #0` | `memcmp` return in `_queryModule2` → treat as equal |
+| `0x39cb0` | `d2800000` | `mov x0, #0` | `memcmp` return in `_queryModule0` → treat as equal |
+| `0x39e18` | `d2800000` | `mov x0, #0` | `memcmp` return in `_queryModule1` → treat as equal |
+| `0x3f564` | `d503201f` | NOP | First patched instruction in `_validateConstraintsSignatureType` |
+| `0x3f56c` | `d503201f` | NOP | Second patched instruction in `_validateConstraintsSignatureType` |
+
+After patching, TXM is repacked with `pyimg4 im4p create -f trxm --lzfse`. The PAYP structure (trust-cache payload trailer) is copied verbatim from the original im4p and appended to the newly created im4p; the outer length field in the im4p header is updated accordingly.
+
+### Kernelcache (`CFW/kernelcache.release.iphone12`)
+
+The kernelcache receives the largest set of patches. See [`reference/kernel-patches`](/reference/kernel-patches) for full details. At a high level the patches cover:
+
+- **SSV bypass** — NOPs that prevent three SSV-related panics (`_apfs_vfsop_mount`, `_authapfs_seal_is_broken`, `_bsd_init`)
+- **AMFI / TrustCache** — `AMFIIsCDHashInTrustCache` rewritten to always return 1
+- **Launch constraints** — `_proc_check_launch_constraints` stubbed to return 0
+- **dyld policy** — `_check_dyld_policy_internal` forced to allow
+- **Debugger flag** — `_PE_i_can_has_debugger` always returns a non-zero value
+- **SEP / unencrypted volume** — panic for "unencrypted data volume is not allowed" suppressed
+- **Kernel name** — version string rewritten to `/PATCHED_ARM64_T8030`
+
+The patched raw kernel is repacked with `pyimg4 im4p create -f rkrn --lzfse -d KernelManagement_host-511`. The PAYP trailer is preserved using the same copy-and-fixup approach as TXM.
+
+---
+
+## Beta 2 vs Beta 3 Offset Differences
+
+All offsets documented above are for **beta 2 (24A5370h)**. The `work-27.0b3/make_cfw.py` script targets **beta 3 (24A5380h)** and uses different offsets for every component. The table below shows the diverging offsets for iBSS / iBEC (the bootloaders change the most between builds):
+
+| Patch | Beta 2 offset | Beta 3 offset |
+|-------|--------------|--------------|
+| `image4_validate_property_callback` NOP | `0x23DB0` | `0x23EFC` |
+| `image4_validate_property_callback` `mov x0,#0` | `0x23DB4` | `0x23F00` |
+| Boot-args `adrp` | `0x2AFBC` | `0x2B0F4` |
+| Boot-args `add` | `0x2AFC0` | `0x2B0F8` |
+| Boot-args string | `0xD3850` | `0xD3960` |
+| iBEC nonce-keep branch | `0x36bd0` | *(not present in b3)* |
+
+<Warning>
+  All offsets are build-specific. They are only valid for **24A5370h** (beta 2) or **24A5380h** (beta 3) on iPhone 11 Pro (d421 / A13 / T8030). Re-verify every offset in IDA before applying to any other build.
+</Warning>

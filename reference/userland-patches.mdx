@@ -1,0 +1,105 @@
+---
+title: "userland_patches.py: Byte-Patch Userland Binaries for Hacktivation"
+sidebarTitle: "userland_patches.py"
+description: "Patch mobileactivationd, coreauthd, and ctkd in-place to enable offline hacktivation and prevent SEP-related crashes on the custom firmware."
+---
+
+`userland_patches.py` applies targeted 32-bit word writes to three userland daemons that must be modified to survive on the usbliter8 CFW, where the SEP is absent and the device is not registered with Apple's activation servers. The script operates on a local copy of the binary and prints a summary of every word replaced.
+
+## Location
+
+```
+patches/userland_patches.py
+```
+
+## Usage
+
+```shell
+./patches/userland_patches.py <coreauthd|ctkd|mobileactivationd> <binary_path>
+```
+
+The first positional argument selects which patch set to apply; the second is the path to the binary on disk. The file is patched **in place**.
+
+## Recommended Workflow
+
+Always keep an `.orig` backup before patching. After patching, re-sign the binary ad-hoc while preserving its original entitlements, then deploy to the device System volume.
+
+```shell
+# 1. Back up, patch, and re-sign coreauthd
+cp coreauthd coreauthd.orig
+./patches/userland_patches.py coreauthd coreauthd
+ldid -e coreauthd.orig > ents.plist
+ldid -S ents.plist -Cadhoc coreauthd
+
+# 2. Repeat for ctkd
+cp ctkd ctkd.orig
+./patches/userland_patches.py ctkd ctkd
+ldid -e ctkd.orig > ents.plist
+ldid -S ents.plist -Cadhoc ctkd
+
+# 3. Repeat for mobileactivationd
+cp mobileactivationd mobileactivationd.orig
+./patches/userland_patches.py mobileactivationd mobileactivationd
+ldid -e mobileactivationd.orig > ents.plist
+ldid -S ents.plist -Cadhoc mobileactivationd
+```
+
+After re-signing, deploy each binary to the System volume (live-fs; the snapshot must be renamed first) and sync.
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | All patch words verified successfully after write |
+| `1` | Verification failed — at least one patched word did not read back correctly |
+
+---
+
+## Patch Reference
+
+The following tables document every entry in the `PATCHES` dict defined in the source. All offsets are file offsets into the binary (not virtual addresses).
+
+### `ctkd`
+
+`-[TKSEPKeyServer serverAttributesOfKey:error:]` is called when CryptoTokenKit asks the SEP-backed key server for key attributes. On the CFW the SEP is absent, so the call raises an uncaught `NSException` from `-[TKLocalSEPRefKey keyType]`. These two patches replace the entire function body with a `mov x0, #0 / ret` stub that returns `nil` immediately.
+
+| Offset | Value | Instruction | Comment |
+|--------|-------|-------------|---------|
+| `0x1B38` | `D2800000` | `mov x0, #0` | `-[TKSEPKeyServer serverAttributesOfKey:error:]` → return nil |
+| `0x1B3C` | `D65F03C0` | `ret` | Return immediately |
+
+### `coreauthd`
+
+The DTO (Device Transfer Operations) pending-policy startup block in `coreauthd` attempts to call `startController` via `_objc_msgSend`. On the CFW this triggers a SEP DTO-ratchet parse that null-dereferences at offset `0x120`. A single NOP removes the `BL` to `_objc_msgSend$startController`, causing the block to skip the ratchet setup entirely.
+
+| Offset | Value | Instruction | Comment |
+|--------|-------|-------------|---------|
+| `0x95C0` | `D503201F` | NOP | NOP the `BL _objc_msgSend$startController` in the DTO pending-policy block |
+
+### `mobileactivationd`
+
+These patches implement offline hacktivation. The first patch makes `-[DeviceType should_hactivate]` return `YES` unconditionally, which triggers the log line:
+
+```
+Hactivation is enabled, short circuiting activation state to Activated
+```
+
+The remaining patches rewrite the `getActivationStateWithCompletionBlock` stub to load and return the `CFString` `"Activated"` directly, serving as a belt-and-suspenders guarantee that the activation state is always reported as activated regardless of any subsequent code path.
+
+| Offset | Value | Instruction | Comment |
+|--------|-------|-------------|---------|
+| `0x2EBB14` | `52800020` | `mov w0, #1` | `-[DeviceType should_hactivate]` → YES |
+| `0x327CB0` | `D503201F` | NOP | NOP the start of the `getActivationState` stub |
+| `0x327D10` | `90000620` | `adrp x0, <page>` | Load the page address of the `"Activated"` CFString |
+| `0x327D14` | `91002000` | `add x0, x0, #8` | Add intra-page offset to point x0 at the CFString |
+| `0x327D18` | `D503201F` | NOP | Cleanup NOP |
+
+---
+
+<Warning>
+  All offsets are build-specific to **24A5370h / iPhone12,3** (iOS 27.0 beta 2). They must be re-verified in IDA for any other build or device model.
+</Warning>
+
+<Note>
+  The ScreenTime setup deadlock is **not** a byte patch. It is a launchd disabled-overrides edit. See [`disable_screentime.py`](/reference/disable-screentime) for the correct fix.
+</Note>

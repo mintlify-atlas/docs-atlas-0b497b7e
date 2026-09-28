@@ -1,0 +1,110 @@
+{
+  "projectType": "general",
+  "projectName": "usbliter8-fun",
+  "projectDescription": "A research jailbreak toolkit for iPhone 11 Pro (A13/T8030) using the usbliter8 SecureROM exploit to build and restore a custom firmware on iOS 27 beta.",
+  "theme": "aspen",
+  "primaryColor": "#E8550A",
+  "lightColor": "#FF7A3D",
+  "darkColor": "#C43D00",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Guide",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "introduction",
+              "hardware-setup",
+              "requirements"
+            ]
+          },
+          {
+            "group": "Jailbreak Process",
+            "pages": [
+              "process/flash-cfw",
+              "process/sshrd-boot",
+              "process/normal-boot",
+              "process/get-past-setup"
+            ]
+          },
+          {
+            "group": "Post-Jailbreak",
+            "pages": [
+              "post/internet-usb",
+              "post/bootstrap-sileo",
+              "post/trollvnc"
+            ]
+          },
+          {
+            "group": "Troubleshooting",
+            "pages": [
+              "troubleshooting/common-issues",
+              "troubleshooting/boot-chain-tips"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Scripts",
+            "pages": [
+              "reference/make-cfw",
+              "reference/userland-patches",
+              "reference/disable-screentime",
+              "reference/tss-proxy-server",
+              "reference/net-up"
+            ]
+          },
+          {
+            "group": "Kernel & Firmware Patches",
+            "pages": [
+              "reference/kernel-patches",
+              "reference/firmware-components",
+              "reference/devicetree-patches"
+            ]
+          },
+          {
+            "group": "Tools",
+            "pages": [
+              "reference/tools-overview",
+              "reference/commands-cheatsheet"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "SecureROM exploit (usbliter8) via RP2350/Raspberry Pi Pico 2 to enter PWN DFU mode",
+    "Custom firmware (CFW) builder targeting iPhone 11 Pro (iPhone12,3) on iOS 27.0 beta",
+    "Kernel patches: SSV bypass, AMFI/TrustCache, launch constraints, USB Restricted Mode",
+    "Userland byte-patcher for coreauthd, ctkd, and mobileactivationd (hacktivation)",
+    "ScreenTime/launchd override to skip Setup deadlock",
+    "Reverse USB tethering (net_up.sh) to share Mac internet over USB-ethernet",
+    "SSH ramdisk (SSHRD) boot chain for filesystem access and patching",
+    "TrollVNC integration for screen control over USB",
+    "TSS proxy server for signing beta firmware with Apple's ticket server",
+    "Bootstrap and Sileo package manager installation support"
+  ],
+  "publicApiSurface": [
+    "make_cfw.py — build the custom firmware and restore ramdisk",
+    "restore_cfw.sh — flash CFW to device via idevicerestore",
+    "boot.py — send normal boot chain to device via usbliter8ctl + irecovery",
+    "boot_rd.sh — send SSHRD boot chain to device",
+    "get_boot.py — build/refresh the normal boot Ramdisk chain",
+    "get_rd.py — fetch/build the SSH ramdisk",
+    "get_fw.py — download and extract the IPSW firmware",
+    "tss_proxy_server.py — local HTTP proxy for TSS signing requests",
+    "net_up.sh — set up reverse USB tethering from Mac to device",
+    "vnc_up.sh — start TrollVNC server and open screen sharing",
+    "patches/userland_patches.py <coreauthd|ctkd|mobileactivationd> <binary>",
+    "patches/disable_screentime.py [--show] <disabled.plist>",
+    "tools/usbliter8ctl — send iBSS/exploit payload over USB",
+    "tools/img4 / tools/img4tool — IMG4 pack/unpack/sign",
+    "tools/ldid_macosx_arm64 — re-sign binaries with ad-hoc entitlements",
+    "tools/sshpass — non-interactive SSH with password"
+  ]
+}

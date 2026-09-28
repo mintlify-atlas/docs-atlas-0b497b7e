@@ -1,0 +1,224 @@
+---
+title: "Get Past Setup: Hacktivation and ScreenTime Fix"
+sidebarTitle: "Get Past Setup"
+description: "Apply offline hacktivation patches to mobileactivationd, coreauthd, and ctkd, then fix the ScreenTime launchd deadlock so Setup completes on the first boot."
+---
+
+On the first normal boot after a clean CFW restore, iOS lands in the Setup assistant and refuses to advance. Two entirely separate problems are responsible: the device cannot activate because SEP is non-functional, and Setup hangs on a loading spinner due to a launchd deadlock in `ScreenTimeAgent`. Both must be fixed before Setup can reach the Home screen.
+
+## Part A: Hacktivation
+
+<Accordion title="Why activation fails on the CFW">
+  Real activation requires the Secure Enclave Processor (SEP) to produce a signed attestation. On the custom firmware, SEP is intentionally stubbed out — the kernel patches silence its panics and return-zero all its communication interfaces. As a result, `mobileactivationd` never receives a valid activation response from Apple's servers, and `coreauthd` and `ctkd` crash when they attempt to use SEP-backed key operations. The fix is to patch each daemon's binary so that it never reaches the SEP codepath in the first place.
+</Accordion>
+
+The three binaries that need patching are `mobileactivationd`, `coreauthd`, and `ctkd`. All patches are scripted in `patches/userland_patches.py`.
+
+### Patches applied
+
+| Binary | Offset | Patch | Effect |
+|---|---|---|---|
+| `mobileactivationd` | `0x2EBB14` | `mov w0,#1` | `-[DeviceType should_hactivate]` returns 1 → enables offline hacktivation path |
+| `mobileactivationd` | `0x327CB0` | NOP | `getActivationStateWithCompletionBlock` prologue cleared |
+| `mobileactivationd` | `0x327D10–18` | `adrp x0` + `add x0,x0,#8` + NOP | Returns the CFString `"Activated"` |
+| `coreauthd` | `0x95C0` | NOP | `BL _objc_msgSend$startController` removed — skips SEP DTO-ratchet parse that null-derefs |
+| `ctkd` | `0x1B38–1B3C` | `mov x0,#0` + `ret` | `-[TKSEPKeyServer serverAttributesOfKey:error:]` returns nil — avoids uncaught NSException from fake SEP |
+
+All offsets are build-specific to **24A5370h / iPhone12,3**. Re-verify them in a disassembler for any other build.
+
+### Steps
+
+<Steps>
+  <Step title="Boot into SSHRD and mount the System volume">
+    Follow the [SSHRD boot guide](/process/sshrd-boot) to get an SSH session with the System volume mounted read-write at `/mnt1`.
+  </Step>
+
+  <Step title="Copy the three binaries to your Mac">
+    From your Mac terminal:
+
+    ```shell
+    scp -P 2222 \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      root@localhost:/mnt1/usr/libexec/mobileactivationd \
+      root@localhost:/mnt1/usr/libexec/coreauthd \
+      root@localhost:/mnt1/usr/libexec/ctkd \
+      .
+    ```
+  </Step>
+
+  <Step title="Make .orig backups">
+    Always back up the originals before patching. The re-signing step below requires the original to extract its entitlements.
+
+    ```shell
+    cp mobileactivationd mobileactivationd.orig
+    cp coreauthd coreauthd.orig
+    cp ctkd ctkd.orig
+    ```
+  </Step>
+
+  <Step title="Apply the patches">
+    Run the patch script for each binary. The script edits the file in place and prints a confirmation line for every word written.
+
+    ```shell
+    ./patches/userland_patches.py mobileactivationd mobileactivationd
+    ./patches/userland_patches.py coreauthd coreauthd
+    ./patches/userland_patches.py ctkd ctkd
+    ```
+
+    Each run prints `[OK] patched <name> (<N> words)` on success.
+  </Step>
+
+  <Step title="Re-sign each binary with its original entitlements">
+    You must re-sign ad-hoc while preserving the **original entitlements exactly**. Do not add or remove any entitlements, and in particular **do not** include `get-task-allow` — AMFI kills binaries signed with `get-task-allow` on this CFW.
+
+    ```shell
+    # mobileactivationd
+    ldid -e mobileactivationd.orig > ents_mad.plist
+    ldid -S ents_mad.plist -Cadhoc mobileactivationd
+
+    # coreauthd
+    ldid -e coreauthd.orig > ents_cad.plist
+    ldid -S ents_cad.plist -Cadhoc coreauthd
+
+    # ctkd
+    ldid -e ctkd.orig > ents_ctkd.plist
+    ldid -S ents_ctkd.plist -Cadhoc ctkd
+    ```
+  </Step>
+
+  <Step title="Deploy the patched binaries back to the device">
+    Copy the patched files back to the System volume (still mounted read-write at `/mnt1`):
+
+    ```shell
+    scp -P 2222 \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      mobileactivationd coreauthd ctkd \
+      root@localhost:/mnt1/usr/libexec/
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  Always make a `.orig` backup before patching. Re-sign with **original entitlements only** — dropping or adding entitlements (especially `get-task-allow`) will cause AMFI to refuse to launch the binary, and the system will be stuck in a reboot loop.
+</Warning>
+
+---
+
+## Part B: ScreenTime Deadlock Fix
+
+<Accordion title="Why the ScreenTime deadlock occurs">
+  After hacktivation patches are applied, Setup still freezes on the loading spinner. The crash reporter shows `com.apple.purplebuddy` (Setup) exhausting a 10-second watchdog, with its call stack blocked on an XPC connection to `com.apple.ScreenTimeAgent`.
+
+  `ScreenTimeAgent` is an **on-demand** launchd job: it declares a `MachServices` entry with a `.setup` key, which causes launchd to launch it automatically when Setup opens an XPC connection to it. The problem is that on this CFW, `ScreenTimeAgent` accepts the XPC connection but never sends a reply. Setup blocks waiting, the 10-second watchdog fires, Setup crashes, and the device loops back to the beginning of Setup.
+
+  Renaming or deleting the `ScreenTimeAgent` LaunchDaemon plist file has no effect — launchd has already cached the on-demand registration from the last boot. The correct fix is to add the agent's label to `disabled.plist` so that launchd **refuses** to launch it. When Setup's XPC open fails immediately rather than timing out, Setup continues through the flow instead of deadlocking.
+</Accordion>
+
+The fix is scripted in `patches/disable_screentime.py`. It adds five ScreenTime and FamilyControls labels to `disabled.plist` and writes the file back as a **binary plist** (launchd on this build will not read XML format from this path).
+
+### Labels disabled
+
+| Label | Reason |
+|---|---|
+| `com.apple.ScreenTimeAgent` | The specific job Setup blocks on |
+| `com.apple.ScreenTimeSettingsAgent` | Related ScreenTime agent |
+| `com.apple.FamilyControlsAgent` | FamilyControls subsystem |
+| `com.apple.familycircled` | Family sharing daemon |
+| `com.apple.familynotificationd` | Family notification daemon |
+
+### Steps
+
+<Steps>
+  <Step title="Boot into normal mode (or SSHRD)">
+    The `disabled.plist` file lives in the Data volume. You can reach it from either a normal boot via SSH or from SSHRD with the Data volume mounted at `/mnt2`.
+
+    **From a normal boot:**
+    ```
+    /var/db/com.apple.xpc.launchd/disabled.plist
+    ```
+
+    **From SSHRD (Data volume mounted at /mnt2):**
+    ```
+    /mnt2/db/com.apple.xpc.launchd/disabled.plist
+    ```
+  </Step>
+
+  <Step title="Copy disabled.plist to your Mac">
+    From a normal boot (SSH via iproxy):
+
+    ```shell
+    scp -P 2222 \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      root@localhost:/var/db/com.apple.xpc.launchd/disabled.plist \
+      .
+    ```
+
+    Or directly over USB Ethernet (after `net_up.sh`):
+
+    ```shell
+    scp root@10.7.0.2:/var/db/com.apple.xpc.launchd/disabled.plist .
+    ```
+  </Step>
+
+  <Step title="(Optional) Inspect the current state">
+    To see which of the five labels are already present and their current values before modifying anything:
+
+    ```shell
+    ./patches/disable_screentime.py --show disabled.plist
+    ```
+
+    Example output:
+
+    ```
+      com.apple.ScreenTimeAgent             <absent>
+      com.apple.ScreenTimeSettingsAgent     <absent>
+      com.apple.FamilyControlsAgent         <absent>
+      com.apple.familycircled              <absent>
+      com.apple.familynotificationd        <absent>
+    ```
+  </Step>
+
+  <Step title="Apply the fix">
+    ```shell
+    ./patches/disable_screentime.py disabled.plist
+    ```
+
+    The script prints each label's transition and then a summary line:
+
+    ```
+      com.apple.ScreenTimeAgent             <absent> -> True
+      com.apple.ScreenTimeSettingsAgent     <absent> -> True
+      com.apple.FamilyControlsAgent         <absent> -> True
+      com.apple.familycircled              <absent> -> True
+      com.apple.familynotificationd        <absent> -> True
+    [OK] 5 labels disabled (5 changed), 42 entries total. Now: push back to the device and reboot.
+    ```
+
+    The file is written as a binary plist, which is required — launchd on this build ignores XML plists at this path.
+  </Step>
+
+  <Step title="Push disabled.plist back to the device">
+    From a normal boot via iproxy:
+
+    ```shell
+    scp -P 2222 \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      disabled.plist \
+      root@localhost:/var/db/com.apple.xpc.launchd/disabled.plist
+    ```
+
+    Or directly over USB Ethernet:
+
+    ```shell
+    scp disabled.plist root@10.7.0.2:/var/db/com.apple.xpc.launchd/disabled.plist
+    ```
+  </Step>
+
+  <Step title="Reboot into a normal boot">
+    Reboot the device and send the normal boot chain again (PWN DFU → `get_boot.py` → `boot.py`). Setup should now advance past the loading spinner and reach the Home screen.
+  </Step>
+</Steps>

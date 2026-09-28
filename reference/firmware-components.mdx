@@ -1,0 +1,208 @@
+---
+title: "Firmware Components: What make_cfw.py Patches in the IPSW"
+sidebarTitle: "Firmware Components"
+description: "Overview of each firmware component patched by make_cfw.py — iBSS, iBEC, RestoreRamdisk, TXM, and kernelcache — with the patching strategy for each."
+---
+
+`make_cfw.py` takes an unmodified iOS 27.0 beta 2 IPSW for iPhone 11 Pro and produces a **Custom Firmware (CFW)** by modifying a working copy of its firmware components stored in a directory called `CFW/`. It never touches the original IPSW folder directly — on first run it clones the IPSW directory tree (`cp -rf … CFW`) and all subsequent edits happen inside `CFW/`. Five distinct firmware components are patched: the iBSS and iBEC first- and second-stage bootloaders, the RestoreRamdisk (containing `restored_external` and `asr`), the TXM code-signing firmware, and the XNU kernelcache. A sixth component, the DeviceTree, is patched by a companion script; see [DeviceTree Patches](/reference/devicetree-patches) for that coverage.
+
+<Note>
+`make_cfw.py` creates a `.bak` backup of every component before modifying it (e.g. `iBEC.d421.RELEASE.im4p.bak`). If the script is run a second time it reads the `.bak` as the patch input, not the already-modified file. This makes the patching pipeline **idempotent**: running it again produces the same output without double-patching.
+</Note>
+
+## Component overview
+
+| Component | IPSW path | Patching tool | Purpose in the boot chain |
+|-----------|-----------|--------------|--------------------------|
+| iBSS | `Firmware/dfu/iBSS.d421.RELEASE.im4p` | `img4` (unwrap) | First-stage DFU bootloader; loaded by SecureROM |
+| iBEC | `Firmware/dfu/iBEC.d421.RELEASE.im4p` | `img4` (unwrap) → `img4tool` (repack) | Second-stage bootloader; loads blobs and the kernel |
+| RestoreRamdisk | `094-13753-132.dmg` (b2) / `094-13753-150.dmg` (b3) | `pyimg4`, `hdiutil` | Minimal restore OS containing `restored_external` and `asr` |
+| TXM | `Firmware/txm.iphoneos.release.im4p` | `pyimg4` | Code-signing enforcement firmware |
+| Kernelcache | `kernelcache.release.iphone12` | `pyimg4` | Compressed XNU kernel image |
+| DeviceTree | `Firmware/all_flash/DeviceTree.d421ap.im4p` | `img4`, `img4tool`, `dt_patch2.py` / `patch_dt.py` | Hardware description; see [DeviceTree Patches](/reference/devicetree-patches) |
+
+---
+
+## iBSS
+
+**Role.** iBSS (Initial Boot Secondary Stage) is the first bootloader code that SecureROM loads when the device is in DFU mode. It is responsible for basic hardware initialization and for handing control to iBEC.
+
+**Extraction.** The im4p wrapper is stripped to a raw Mach-O binary:
+
+```shell
+../tools/img4 -i iPhone12,3,…/Firmware/dfu/iBSS.d421.RELEASE.im4p -o Ramdisk/iBSS.raw
+```
+
+The output lands in `Ramdisk/` because iBSS is used as part of the SSH ramdisk (SSHRD) boot chain sent by `boot_rd.sh`.
+
+**Patches applied (beta 2 offsets).**
+
+| File Offset | Patch value | Symbol / purpose |
+|-------------|-------------|-----------------|
+| `0x23DB0` | `0xd503201f` (NOP) | `image4_validate_property_callback` — first half of the IMG4 property validation bypass |
+| `0x23DB4` | `0xd2800000` (MOV x0, #0) | `image4_validate_property_callback` — forces success return |
+| `0x2AFBC` | `0xB0000542` (ADRP x2, #0xa9000) | Re-point the ADRP half of the boot-args pointer to the new string slot |
+| `0x2AFC0` | `0x91214042` (ADD x2, x2, #0x850) | Re-point the ADD half of the boot-args pointer |
+| `0xD3850` | `-v wdt=-1 rd=md0 -restore\0` | New boot-args string written into the iBSS image at the slot the ADRP/ADD pair now points to |
+
+The boot-args `-v wdt=-1 rd=md0 -restore` tell XNU to boot verbose, disable the watchdog timer, mount `md0` (the ramdisk) as the root device, and enter restore mode.
+
+<Note>
+Beta 3 (`work-27.0b3`) uses slightly different offsets for the same three patches:
+`image4_validate_property_callback` → `0x23EFC` / `0x23F00`; boot-args ADRP/ADD → `0x2B0F4` / `0x2B0F8`; string slot → `0xD3960`. The boot-args string itself is identical.
+</Note>
+
+---
+
+## iBEC
+
+**Role.** iBEC (Initial Boot Execution Context) is the second-stage bootloader. It receives control from iBSS, loads all signed firmware blobs (TXM, DeviceTree, kernelcache, etc.), and hands off to the kernel.
+
+**Extraction and repack.** Unlike iBSS, the patched iBEC is repacked into a signed im4p and placed inside the CFW directory:
+
+```shell
+../tools/img4 -i CFW/Firmware/dfu/iBEC.d421.RELEASE.im4p.bak -o iBEC.raw
+# ... patches applied to iBEC.raw ...
+../tools/img4tool -c CFW/Firmware/dfu/iBEC.d421.RELEASE.im4p -t ibec iBEC.raw
+```
+
+**Patches applied (beta 2 offsets).** iBEC receives the same `image4_validate_property_callback` and boot-args patches as iBSS (identical offsets in beta 2), plus one additional patch:
+
+| File Offset | Patch value | Symbol / purpose |
+|-------------|-------------|-----------------|
+| `0x36bd0` | `0x1400000a` (B #0x28) | Preserve the generator/nonce through boot — patches the branch that would otherwise clear the nonce, keeping it stable for APTicket validation |
+| `0x23DB0` | `0xd503201f` (NOP) | `image4_validate_property_callback` bypass (same as iBSS) |
+| `0x23DB4` | `0xd2800000` (MOV x0, #0) | `image4_validate_property_callback` return value |
+| `0x2AFBC` | `0xB0000542` (ADRP x2, #0xa9000) | Boot-args ADRP re-point |
+| `0x2AFC0` | `0x91214042` (ADD x2, x2, #0x850) | Boot-args ADD re-point |
+| `0xD3850` | `-v wdt=-1 rd=md0 -restore\0` | Boot-args string slot |
+
+<Note>
+iBEC's load address is `0x19c050000` (noted in a comment in `make_cfw.py`). This matters when computing virtual addresses from file offsets for debugging purposes.
+</Note>
+
+---
+
+## RestoreRamdisk
+
+**Role.** The RestoreRamdisk is a minimal disk image (DMG) mounted by iBEC during a restore. It contains two key binaries: `restored_external`, the main restore orchestrator that coordinates partition layout and payload installation, and `asr` (Apple Software Restore), the disk-imaging tool that writes the new system volume.
+
+**Extraction and mount.** The ramdisk is an im4p-wrapped DMG. `make_cfw.py` extracts the raw DMG and mounts it with `hdiutil`:
+
+```shell
+pyimg4 im4p extract -i CFW/094-13753-132.dmg.bak -o ramdisk.dmg
+sudo -A hdiutil attach -mountpoint CFW_RD ramdisk.dmg -owners off
+```
+
+The `-owners off` flag prevents macOS from enforcing file ownership inside the mounted image, allowing root-level edits from a non-root user context.
+
+**`restored_external` patches (beta 2 offsets).**
+
+| File Offset | Patch value | Purpose |
+|-------------|-------------|---------|
+| `0x7e53c` | `0xd2800000` (MOV x0, #0) | Force the FDR (Factory Device Restore) step to always succeed — eliminates a hard failure path keyed off `RestoredFDRRecover` that blocks restores on a fake SEP |
+| `0x49e38` | `0xd2800000` (MOV x0, #0) | `_ramrod_device_has_baseband` — returns 0 (no functional baseband on the CFW device) |
+| `0x49e38+4` | `0xD65F03C0` (RET) | `_ramrod_device_has_baseband` return |
+| `0x49DC0` | `0xd2800000` (MOV x0, #0) | `ramrod_device_has_baseband_legacy` — same stub, legacy variant |
+| `0x49DC0+4` | `0xD65F03C0` (RET) | `ramrod_device_has_baseband_legacy` return |
+
+After patching, `restored_external` is re-signed ad-hoc:
+
+```shell
+../tools/ldid_macosx_arm64 -S -M -Cadhoc CFW_RD/usr/local/bin/restored_external
+```
+
+**`asr` patch.**
+
+| File Offset | Patch value | Purpose |
+|-------------|-------------|---------|
+| `0x24d34` | `0xd503201f` (NOP) | NOP the "Image failed signature verification." check so `asr` will image unsigned or CFW-modified payloads without aborting |
+
+`asr` is also re-signed after patching:
+
+```shell
+../tools/ldid_macosx_arm64 -S -M -Cadhoc CFW_RD/usr/sbin/asr
+```
+
+**Unmount and repack.**
+
+```shell
+sudo -A hdiutil detach -force CFW_RD
+pyimg4 im4p create -i ramdisk.dmg -o CFW/094-13753-132.dmg -f rdsk
+```
+
+The four-character type tag `rdsk` identifies the blob as a restore ramdisk to iBEC.
+
+---
+
+## TXM (Trust eXecution Monitor)
+
+**Role.** TXM is Apple's user-space–adjacent code-signing enforcement firmware. It runs at a privileged level above the kernel and validates code-signature constraints at runtime. On a CFW build, TXM would refuse to run any binary that is not registered in the system trust cache or that fails constraint checks — so it must be patched to allow arbitrary signed (and ad-hoc–signed) code to execute.
+
+**Extraction.**
+
+```shell
+pyimg4 im4p extract -i CFW/Firmware/txm.iphoneos.release.im4p.bak -o TXM.raw
+```
+
+**Patches applied (beta 2 offsets).**
+
+| File Offset | Patch value | Symbol / purpose |
+|-------------|-------------|-----------------|
+| `0x39fac` | `0xd2800000` (MOV x0, #0) | `memcmp` call inside `_queryModule2` — bypasses the module hash check that would reject unregistered code |
+| `0x39cb0` | `0xd2800000` (MOV x0, #0) | `memcmp` call inside `_queryModule0` |
+| `0x39e18` | `0xd2800000` (MOV x0, #0) | `memcmp` call inside `_queryModule1` |
+| `0x3f564` | `0xd503201f` (NOP) | First instruction in `_validateConstraintsSignatureType` — suppresses constraint validation failure (TXM error selector `0xA1`) |
+| `0x3f56c` | `0xd503201f` (NOP) | Second instruction in `_validateConstraintsSignatureType` |
+
+Without these patches TXM emits log lines of the form `TXM [Error]: CodeSignature: selector: 24 | 0xA8 | 0x30 | 1` and `TXM [Error]: CodeSignature: selector: 24 | 0xA1 | 0x30 | 1` and kills the offending process.
+
+**Repack with PAYP structure preserved.**
+
+```shell
+pyimg4 im4p create -i TXM.raw -o TXM.im4p -d 1 -f trxm --lzfse
+```
+
+The PAYP structure from the original im4p is then located, appended to the new `TXM.im4p`, and the outer ASN.1 length field is updated — identical to the kernelcache repack procedure described in [Kernel Patches](/reference/kernel-patches).
+
+```shell
+mv TXM.im4p CFW/Firmware/txm.iphoneos.release.im4p
+```
+
+---
+
+## Kernelcache
+
+**Role.** The kernelcache is the compressed XNU kernel image loaded by iBEC. It contains the entire operating system kernel plus all compiled-in kexts. On a stock iOS install the kernelcache is sealed and verified; on the CFW it is patched to disable every security check that would prevent the modified system from booting.
+
+**File.** `CFW/kernelcache.release.iphone12` — a compressed im4p with type tag `rkrn`.
+
+**Patches.** The kernelcache receives the largest set of patches, organized into four categories:
+
+- **Kernel identification** — two string writes of `/PATCHED_ARM64_T8030`
+- **SSV bypass** — three NOPs silencing "Failed to find the root snapshot", "root volume seal is broken", and "rootvp not authenticated after mounting" panics
+- **AMFI / code-signing bypass** — five patch sites covering `AMFIIsCDHashInTrustCache`, `_PE_i_can_has_debugger`, `postValidation`, `_check_dyld_policy_internal`, and `_proc_check_launch_constraints`
+- **seprmvr64 bypass** — one NOP preventing an "unencrypted data volume is not allowed" panic
+
+Full offset tables for all kernel patches are in [Kernel Patches](/reference/kernel-patches).
+
+**Repack.** After patching, `kcache.raw` is packed with LZFSE compression and the PAYP structure from the original `.bak` is appended:
+
+```shell
+pyimg4 im4p create -i kcache.raw -o krnl.im4p \
+  -d KernelManagement_host-511 -f rkrn --lzfse
+# append PAYP + fix length field (see kernel-patches page for detail)
+mv krnl.im4p CFW/kernelcache.release.iphone12
+```
+
+---
+
+## DeviceTree
+
+**Role.** The DeviceTree is a binary blob in Apple's proprietary iBoot DTB format passed to the kernel at boot time. It describes the hardware topology and provides boot parameters consumed by both iBoot and XNU drivers.
+
+**File.** `CFW/Firmware/all_flash/DeviceTree.d421ap.im4p` — `d421` is the internal hardware codename for iPhone 11 Pro (iPhone12,3); `d421ap` is the variant for that specific AP configuration.
+
+**Patches.** `make_cfw.py` calls the companion script `dt_patch2.py` (beta 2) or `patch_dt.py` (beta 3) to remove the `content-protect` property from the `/defaults` DeviceTree node, preventing APFS from enabling data-volume encryption that the inert CFW SEP cannot service. Beta 3's `patch_dt2.py` additionally sets `no-effaceable-storage` and `boot-ios-diagnostics` to `u32=1` in the `/defaults` and `/product` nodes respectively.
+
+The full DeviceTree patching pipeline and property semantics are documented in [DeviceTree Patches](/reference/devicetree-patches).

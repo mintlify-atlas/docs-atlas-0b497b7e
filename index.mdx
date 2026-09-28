@@ -1,20 +1,66 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "usbliter8-fun: iOS 27 Jailbreak for iPhone 11 Pro"
+sidebarTitle: "Home"
+description: "Research jailbreak toolkit using the usbliter8 SecureROM exploit to build and restore custom firmware on iPhone 11 Pro running iOS 27 beta."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+usbliter8-fun is a research jailbreak toolkit targeting the **iPhone 11 Pro (A13/T8030)** on **iOS 27.0 beta**. It leverages the `usbliter8` SecureROM exploit — delivered via a Raspberry Pi Pico 2 (RP2350) — to enter PWN DFU mode, then builds a heavily-patched custom firmware with kernel bypasses, hacktivation, and a full Sileo/bootstrap installation.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<Warning>
+  Running this toolkit **will erase your device entirely** and break SEP, passcode, Wi-Fi, baseband, and all Apple services. Use only on a **spare iPhone 11 Pro**. This is for developers who enjoy breaking their devices.
+</Warning>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+<CardGroup cols={2}>
+  <Card title="Hardware Setup" icon="microchip" href="/hardware-setup">
+    Wire the Raspberry Pi Pico 2 and prepare the PWN DFU rig before starting
+  </Card>
+  <Card title="Requirements" icon="list-check" href="/requirements">
+    Install Python packages, tools, and download the IPSW before you begin
+  </Card>
+  <Card title="Flash Custom Firmware" icon="bolt" href="/process/flash-cfw">
+    Build the CFW and restore it to your device with the TSS proxy
+  </Card>
+  <Card title="Commands Cheatsheet" icon="terminal" href="/reference/commands-cheatsheet">
+    Quick reference for every boot mode, SSH connection, and common operation
+  </Card>
+</CardGroup>
+
+## How It Works
+
+The jailbreak chains several techniques together:
+
+<Steps>
+  <Step title="Enter PWN DFU">
+    Place the device in DFU mode, then connect it to the Raspberry Pi Pico 2 running the `usbliter8` exploit payload. The Pico blinks twice during exploitation and stays lit on success — `PWND:[usbliter8]` confirms the device is exploitable.
+  </Step>
+  <Step title="Build & Restore Custom Firmware">
+    Run `make_cfw.py` to patch iBSS, iBEC, the kernelcache, TXM, RestoreRamdisk, and DeviceTree. Start `tss_proxy_server.py` to sign the unsigned beta firmware, then run `restore_cfw.sh` to flash it.
+  </Step>
+  <Step title="Boot via SSH Ramdisk">
+    Re-enter PWN DFU and boot the SSHRD chain to access the filesystem. Dump the SEP firmware and extract the APTicket needed for subsequent normal boots.
+  </Step>
+  <Step title="Normal Boot + Post-Install">
+    Build the normal boot chain with `get_boot.py`, boot with `boot.py`, apply userland patches (hacktivation, ScreenTime fix), set up USB internet, and install the bootstrap with Sileo.
+  </Step>
+</Steps>
+
+## Supported Devices
+
+<Info>
+  Currently only **iPhone 11 Pro (iPhone12,3)** targeting **iOS 27.0 beta 2 (24A5370h)** and **beta 3 (24A5380h)** is fully supported. Other A12/A13 devices require re-deriving offsets in IDA Pro.
+</Info>
+
+<CardGroup cols={2}>
+  <Card title="Jailbreak Process" icon="road" href="/process/flash-cfw">
+    Step-by-step walkthrough from PWN DFU to a running jailbroken device
+  </Card>
+  <Card title="Post-Jailbreak" icon="wifi" href="/post/internet-usb">
+    Set up USB internet, install Sileo bootstrap, and enable TrollVNC
+  </Card>
+  <Card title="Kernel Patches Reference" icon="code" href="/reference/kernel-patches">
+    Every kernel patch applied to the iOS 27 kernelcache with offset and rationale
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/troubleshooting/common-issues">
+    Diagnose boot failures, network issues, and app crashes
+  </Card>
+</CardGroup>

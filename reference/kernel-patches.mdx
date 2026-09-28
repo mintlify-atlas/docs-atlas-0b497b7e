@@ -1,0 +1,108 @@
+---
+title: "Kernel Patches: iOS 27 Kernelcache Bypass Table for T8030"
+sidebarTitle: "Kernel Patches"
+description: "Complete table of kernelcache patches applied by make_cfw.py to the iOS 27.0 T8030 kernel: SSV, AMFI, TrustCache, USB Restricted Mode, and seprmvr64 bypasses."
+---
+
+The iOS 27 kernelcache for iPhone 11 Pro (iPhone12,3 / T8030) ships as a compressed im4p image named `kernelcache.release.iphone12`. `make_cfw.py` extracts it to `kcache.raw` using `pyimg4 im4p extract`, applies binary patches directly to the raw decompressed Mach-O, then repacks with LZFSE compression and appends the original PAYP structure to keep the im4p format intact. The patches documented here are specific to build **24A5370h** (iOS 27.0 beta 2, `work-27.0b2/make_cfw.py`); beta 3 (24A5380h, `work-27.0b3/make_cfw.py`) carries the same logical patches but at different file offsets — the beta 3 offsets are listed in a separate column wherever they differ.
+
+<Warning>
+All offsets listed here are build-specific to **24A5370h / iPhone12,3**. Applying them verbatim to any other build, IPSW, or iOS version will silently corrupt the kernel or cause an immediate panic at boot. Always re-derive offsets using IDA Pro (or a comparable disassembler) before porting to a new build.
+</Warning>
+
+## Kernel identification marker
+
+Before any security bypasses are applied, two locations in the raw kernelcache are overwritten with the string `/PATCHED_ARM64_T8030`. This acts as a breadcrumb that lets you confirm — via the boot log or a memory search — that the patched image was actually loaded.
+
+| File Offset (b2) | File Offset (b3) | Written value |
+|-----------------|-----------------|---------------|
+| `0x3ee1e` | `0x3eee4` | `/PATCHED_ARM64_T8030` |
+| `0x3edb3` | `0x3ef50` | `/PATCHED_ARM64_T8030` |
+
+## SSV (Signed System Volume) bypass
+
+iOS mounts the root filesystem from a sealed APFS snapshot. Because the CFW root volume is not sealed by Apple, three separate panic paths must be silenced by replacing their branch or conditional instructions with a NOP (`0xd503201f`).
+
+| Symbol | File Offset (b2) | File Offset (b3) | Patch | Purpose |
+|--------|-----------------|-----------------|-------|---------|
+| `_apfs_vfsop_mount` | `0x303f49c` | `0x303fcdc` | `NOP` | Suppress "Failed to find the root snapshot. Rooting from the live fs …" panic |
+| `_authapfs_seal_is_broken` | `0x2fae32c` | `0x2fae494` | `NOP` | Suppress "root volume seal is broken …" panic |
+| `_bsd_init` | `0x36c1f48` | `0x36be974` | `NOP` | Suppress "rootvp not authenticated after mounting …" panic |
+
+## AMFI and code-signing bypasses
+
+AMFI (Apple Mobile File Integrity) is the kernel extension responsible for enforcing code signatures, trust-cache membership, and launch constraints. The patches below disable its enforcement entirely, which is necessary for running ad-hoc–signed and unsigned binaries on the CFW.
+
+| Symbol | File Offset (b2) | File Offset (b3) | Patch bytes / instructions | Purpose |
+|--------|-----------------|-----------------|---------------------------|---------|
+| `AMFIIsCDHashInTrustCacheImpl` (`__Z24AMFIIsCDHashInTrustCachehPKhPy`) | `0x1f1ebe0` (+0 … +16) | `0x1f1ccf8` (+0 … +16) | `BTI c` · `MOV x0,#1` · `CBZ x3,#8` · `STR x0,[x3]` · `RET` | Force every CD-hash lookup to report "in trust cache"; write back the result pointer if non-null |
+| `_PE_i_can_has_debugger` | `0x3a07368`, `+4` | `0x3a05230`, `+4` | `MOV x0,#1` · `RET` (`0xd2800020`, `0xd65f03c0`) | Always advertise the debugger as enabled, unlocking additional kernel debug paths |
+| `postValidation` (`__ZL14postValidationP8LazyPathP7cs_blobjP12OSDictionaryhbjPKcPPcPm`) | `0x1f2b368` | `0x1f29480` | `0x6B00001F` | Allow unsigned or ad-hoc–signed code past the post-validation check |
+| `_check_dyld_policy_internal` (`__ZL27_check_dyld_policy_internalP4procyPy`) | `0x1f2b8c8` and `0x1f2b8d4` | `0x1f299e0` and `0x1f299ec` | `MOV w0,#1` (`0x52800020`) at both sites | Disable dyld policy restrictions that would block library injection |
+| `_proc_check_launch_constraints` (`__Z30_proc_check_launch_constraintsP4prociiPvmP22launch_constraint_dataPPcPm`) | `0x1f23808`, `+4` | `0x1f21920`, `+4` | `MOV w0,#0` · `RET` (`0x52800000`, `0xd65f03c0`) | Bypass launch-constraint enforcement so constrained binaries can run |
+
+## USB Restricted Mode bypass
+
+USB Restricted Mode locks out USB accessories (and USB data connections in general) when the device has been locked for more than one hour. Bypassing it keeps the USB data line open at all times, which is essential for the tethered boot chain used by usbliter8-fun.
+
+| Symbol | File Offset (b2) | VA (b2) | Patch bytes | Purpose |
+|--------|-----------------|---------|-------------|---------|
+| `isDeviceInRestoreMode` | `0x2894b68` | `0xFFFFFFF009898B68` | `20 00 80 d2 c0 03 5f d6` (MOV x0,#0 ; RET) | Force the USB stack to always believe the device is in restore mode, bypassing the restricted-mode lockout |
+
+<Note>
+The USB Restricted Mode patch is called out separately in the README because it was added on top of the upstream wh1te4ever base. The VA `0xFFFFFFF009898B68` is useful for locating the symbol in a live memory dump or IDA database; `make_cfw.py` uses the file offset `0x2894b68` when writing to `kcache.raw`.
+</Note>
+
+## seprmvr64 bypass
+
+The `seprmvr64` category of patches prevents panics that occur because the CFW uses a fake / inert SEP (Secure Enclave Processor). Without a real SEP, the APFS driver rejects any attempt to mount an encrypted data volume.
+
+| Symbol / context | File Offset (b2) | File Offset (b3) | Patch | Purpose |
+|-----------------|-----------------|-----------------|-------|---------|
+| APFS unencrypted data-volume check | `0x30408ac` | `0x30410ec` | `NOP` (`0xd503201f`) | Suppress "unencrypted data volume is not allowed …" panic that fires when APFS detects the volume is not content-protected while the kernel expects it to be |
+
+## im4p packing after patching
+
+After all binary edits are written to `kcache.raw`, `make_cfw.py` repacks the kernel into a proper im4p container using the following sequence:
+
+<Steps>
+  <Step title="Create the LZFSE-compressed im4p">
+    ```shell
+    pyimg4 im4p create \
+      -i kcache.raw \
+      -o krnl.im4p \
+      -d KernelManagement_host-511 \
+      -f rkrn \
+      --lzfse
+    ```
+    The four-character type tag `rkrn` identifies this blob to iBoot as a kernelcache. The description string `KernelManagement_host-511` is copied verbatim from the original IPSW im4p.
+  </Step>
+  <Step title="Append the PAYP structure from the original im4p">
+    ```python
+    kernel_im4p_data = Path('CFW/kernelcache.release.iphone12.bak').read_bytes()
+    payp_offset = kernel_im4p_data.rfind(b'PAYP')
+    with open('krnl.im4p', 'ab') as f:
+        f.write(kernel_im4p_data[(payp_offset - 10):])
+    ```
+    The PAYP (payload properties) structure carries signing metadata that must survive the repack. It is located by scanning backward from the end of the original `.bak` file and appended verbatim to the new im4p.
+  </Step>
+  <Step title="Fix the outer im4p length field">
+    ```python
+    kernel_im4p_data = bytearray(open('krnl.im4p', 'rb').read())
+    kernel_im4p_data[2:6] = (
+        int.from_bytes(kernel_im4p_data[2:6], 'big') + payp_sz
+    ).to_bytes(4, 'big')
+    open('krnl.im4p', 'wb').write(kernel_im4p_data)
+    ```
+    Because the PAYP bytes were appended raw, the ASN.1 length field at bytes 2–5 of the im4p must be incremented by `payp_sz` to keep the container well-formed.
+  </Step>
+  <Step title="Install into the CFW tree">
+    ```shell
+    mv krnl.im4p CFW/kernelcache.release.iphone12
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+The `.bak` suffix convention used throughout `make_cfw.py` means you can safely re-run the script: the first run creates `kernelcache.release.iphone12.bak` from the pristine IPSW copy, and every subsequent run reads that backup as input rather than the already-patched file, making the process idempotent.
+</Tip>
